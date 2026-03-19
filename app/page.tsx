@@ -35,11 +35,11 @@ export default function Home() {
       external: false,
     },
     {
-  name: "Taurus Chat",
-  href: "/chat",
-  clickable: true,
-  external: false,
-},
+      name: "Taurus Chat",
+      href: "/chat",
+      clickable: true,
+      external: false,
+    },
     {
       name: "Offline Pay",
       href: "/wallet/slide-4",
@@ -244,11 +244,36 @@ export default function Home() {
           </div>
 
           <div className="rounded-3xl border border-cyan-400/20 bg-cyan-400/10 p-6 backdrop-blur">
-            <h3 className="text-2xl font-bold text-cyan-200">Project Contact</h3>
-            <p className="mt-4 text-sm leading-7 text-cyan-50/80 md:text-base">
-              Domain email, live demo link, and production deployment will be
-              added after setup completion.
-            </p>
+            <h3 className="text-2xl font-bold text-cyan-200">Contact Us</h3>
+            <div className="mt-4 space-y-4 text-sm leading-7 text-cyan-50/80 md:text-base">
+              <div>
+                Contact Us
+              </div>
+
+              <div>
+                For general inquiries:
+                <br />
+                support@taurusai.site
+              </div>
+
+              <div>
+                For business & partnerships:
+                <br />
+                ahkar.minn@taurusai.site
+              </div>
+
+              <div>
+                Location:
+                <br />
+                11A, Paral Road, Mayangone Street,
+                <br />
+                Mawlamyine, Myanmar
+              </div>
+
+              <div className="pt-2">
+                Taurus AI — Global AI SaaS Platform
+              </div>
+            </div>
           </div>
         </div>
       </section>
