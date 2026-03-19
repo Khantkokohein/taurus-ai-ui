@@ -6,7 +6,7 @@ export default function Home() {
   const brands = [
     {
       name: "Taurus AI Recruitment",
-      href: "https://taurus-ai-beta.vercel.app/",
+      href: "https://recruitment.taurusai.site//",
       clickable: true,
       external: true,
     },
