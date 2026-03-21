@@ -30,9 +30,6 @@ export default function TrialPage() {
   const handleGoogleLogin = async () => {
     await supabase.auth.signInWithOAuth({
       provider: "google",
-      options: {
-        redirectTo: "https://taurusai.site/web-call",
-      },
     });
   };
 
