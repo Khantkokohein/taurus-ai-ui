@@ -29,6 +29,12 @@ export default function Home() {
       external: false,
     },
     {
+      name: "Taurus Web Call",
+      href: "/web-call",
+      clickable: true,
+      external: false,
+    },
+    {
       name: "Taurus Market",
       href: "#",
       clickable: false,
