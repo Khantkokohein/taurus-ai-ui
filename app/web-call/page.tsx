@@ -63,12 +63,14 @@ const keypadRows = [
   ],
 ];
 
+// Bagan-style feel mini Myanmar keyboard rows
 const mmKeyboardRows = [
-  ["က", "ခ", "ဂ", "ဃ", "င", "စ", "ဆ"],
-  ["ဇ", "ည", "တ", "ထ", "ဒ", "န", "ပ"],
-  ["ဖ", "ဗ", "ဘ", "မ", "ယ", "ရ", "လ"],
-  ["ဝ", "သ", "ဟ", "အ", "ါ", "ိ", "ု"],
-  ["ေ", "့", "း", "ျ", "ြ", "ွ", "်"],
+  ["ဆ", "တ", "န", "မ", "အ", "ပ", "က", "င"],
+  ["ေ", "ျ", "ြ", "ါ", "ာ", "ိ", "ီ", "ု"],
+  ["ူ", "ဲ", "ံ", "့", "း", "်", "္", "ွ"],
+  ["ခ", "ဂ", "ဃ", "စ", "ဇ", "ည", "ဋ", "ဌ"],
+  ["ဒ", "ဓ", "ဖ", "ဗ", "ဘ", "ယ", "ရ", "လ"],
+  ["ဝ", "သ", "ဟ", "ဠ", "အ", "၍", "၏", "၊"],
 ];
 
 const emojis = ["😀", "😂", "🥰", "❤️", "🔥", "👍", "🙏", "🎉", "🤝", "📞", "💬", "🇲🇲"];
@@ -115,7 +117,10 @@ export default function WebCallPage() {
   const [isCalling, setIsCalling] = useState(false);
   const [callStatus, setCallStatus] = useState("Enter number");
   const [speakerOn, setSpeakerOn] = useState(false);
+  const [muted, setMuted] = useState(false);
   const [fontMode, setFontMode] = useState<FontMode>("english");
+  const [showCallScreen, setShowCallScreen] = useState(false);
+  const [callSeconds, setCallSeconds] = useState(0);
 
   const [contacts, setContacts] = useState<ContactItem[]>(defaultContacts);
   const [recents, setRecents] = useState<RecentItem[]>(defaultRecents);
@@ -180,6 +185,14 @@ export default function WebCallPage() {
     localStorage.setItem("iphone_font_mode", JSON.stringify(fontMode));
   }, [fontMode, hydrated]);
 
+  useEffect(() => {
+    if (!showCallScreen) return;
+    const timer = window.setInterval(() => {
+      setCallSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [showCallScreen]);
+
   const fontClass =
     fontMode === "myanmar"
       ? "font-['Noto_Sans_Myanmar','Pyidaungsu','Myanmar_Text',system-ui,sans-serif]"
@@ -224,6 +237,19 @@ export default function WebCallPage() {
       });
   }, [contacts, messages]);
 
+  const activeCallName = useMemo(() => {
+    const found = contacts.find((c) => c.number === phone);
+    return found?.name || "Unknown";
+  }, [contacts, phone]);
+
+  const formattedDuration = useMemo(() => {
+    const mins = Math.floor(callSeconds / 60)
+      .toString()
+      .padStart(2, "0");
+    const secs = (callSeconds % 60).toString().padStart(2, "0");
+    return `${mins}:${secs}`;
+  }, [callSeconds]);
+
   const appendDial = (value: string) => {
     if (isCalling) return;
     const next = `${phone}${value}`;
@@ -237,7 +263,11 @@ export default function WebCallPage() {
     if (phone.length <= PHONE_PREFIX.length) return;
     const next = phone.slice(0, -1);
     setPhone(next);
-    setCallStatus(next.replace(/\s+/g, "").length > PHONE_PREFIX.replace(/\s+/g, "").length ? "Ready to call" : "Enter number");
+    setCallStatus(
+      next.replace(/\s+/g, "").length > PHONE_PREFIX.replace(/\s+/g, "").length
+        ? "Ready to call"
+        : "Enter number"
+    );
   };
 
   const clearDial = () => {
@@ -261,13 +291,18 @@ export default function WebCallPage() {
   const placeCall = () => {
     if (cleanedNumber.length < 8) return;
     setIsCalling(true);
+    setShowCallScreen(true);
+    setCallSeconds(0);
+    setMuted(false);
     setCallStatus(speakerOn ? "Calling on speaker..." : "Calling...");
     addRecentCall(phone, "outgoing");
+  };
 
-    window.setTimeout(() => {
-      setIsCalling(false);
-      setCallStatus("Call ended");
-    }, 1800);
+  const endCall = () => {
+    setIsCalling(false);
+    setShowCallScreen(false);
+    setCallSeconds(0);
+    setCallStatus("Call ended");
   };
 
   const openThread = (contactId: number) => {
@@ -862,7 +897,7 @@ export default function WebCallPage() {
                       <div key={idx} className="flex flex-wrap gap-2">
                         {row.map((char) => (
                           <button
-                            key={char}
+                            key={`${idx}-${char}`}
                             onClick={() => appendMessageText(char)}
                             className="rounded-xl bg-white px-3 py-2 text-sm font-medium text-[#111111] shadow-sm"
                           >
@@ -871,12 +906,24 @@ export default function WebCallPage() {
                         ))}
                       </div>
                     ))}
-                    <div className="pt-1">
+                    <div className="grid grid-cols-3 gap-2 pt-1">
                       <button
                         onClick={() => appendMessageText(" ")}
-                        className="w-full rounded-xl bg-white px-3 py-2 text-sm font-medium text-[#111111] shadow-sm"
+                        className="rounded-xl bg-white px-3 py-2 text-sm font-medium text-[#111111] shadow-sm"
                       >
                         Space
+                      </button>
+                      <button
+                        onClick={() => appendMessageText("္")}
+                        className="rounded-xl bg-white px-3 py-2 text-sm font-medium text-[#111111] shadow-sm"
+                      >
+                        Virama
+                      </button>
+                      <button
+                        onClick={deleteMessageChar}
+                        className="rounded-xl bg-white px-3 py-2 text-sm font-medium text-[#111111] shadow-sm"
+                      >
+                        Backspace
                       </button>
                     </div>
                   </div>
@@ -1039,6 +1086,74 @@ export default function WebCallPage() {
               >
                 Save
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCallScreen && (
+        <div className="fixed inset-0 z-[60] bg-[radial-gradient(circle_at_top,rgba(65,79,255,0.32),transparent_28%),linear-gradient(180deg,#0b1228_0%,#111827_100%)] px-6 py-8 text-white">
+          <div className="mx-auto flex min-h-full max-w-[460px] flex-col">
+            <div className="flex justify-center pt-2">
+              <div className="h-7 w-32 rounded-full bg-black/80" />
+            </div>
+
+            <div className="mt-10 text-center">
+              <div className="text-sm text-white/60">Calling...</div>
+              <div className="mt-3 text-[34px] font-bold tracking-[-0.03em]">
+                {activeCallName}
+              </div>
+              <div className="mt-2 text-base text-white/75">{formatNumberForDisplay(phone)}</div>
+              <div className="mt-3 text-sm text-[#9cc3ff]">
+                {callSeconds === 0 ? "Connecting..." : formattedDuration}
+              </div>
+            </div>
+
+            <div className="mt-12 flex justify-center">
+              <div className="flex h-32 w-32 items-center justify-center rounded-full bg-white/10 text-6xl shadow-[0_0_40px_rgba(255,255,255,0.08)]">
+                📞
+              </div>
+            </div>
+
+            <div className="mt-auto pb-8">
+              <div className="grid grid-cols-3 gap-4">
+                <button
+                  onClick={() => setMuted((prev) => !prev)}
+                  className={`flex h-20 flex-col items-center justify-center rounded-full ${
+                    muted ? "bg-[#0a84ff]" : "bg-white/10"
+                  } backdrop-blur`}
+                >
+                  <span className="text-2xl">🎙️</span>
+                  <span className="mt-1 text-xs">{muted ? "Muted" : "Mute"}</span>
+                </button>
+
+                <button
+                  onClick={() => setSpeakerOn((prev) => !prev)}
+                  className={`flex h-20 flex-col items-center justify-center rounded-full ${
+                    speakerOn ? "bg-[#0a84ff]" : "bg-white/10"
+                  } backdrop-blur`}
+                >
+                  <span className="text-2xl">🔊</span>
+                  <span className="mt-1 text-xs">{speakerOn ? "Speaker On" : "Speaker"}</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab("keypad")}
+                  className="flex h-20 flex-col items-center justify-center rounded-full bg-white/10 backdrop-blur"
+                >
+                  <span className="text-2xl">⌨️</span>
+                  <span className="mt-1 text-xs">Keypad</span>
+                </button>
+              </div>
+
+              <div className="mt-6 flex justify-center">
+                <button
+                  onClick={endCall}
+                  className="flex h-20 w-20 items-center justify-center rounded-full bg-[#ff3b30] text-3xl text-white shadow-[0_12px_30px_rgba(255,59,48,0.35)]"
+                >
+                  📞
+                </button>
+              </div>
             </div>
           </div>
         </div>
