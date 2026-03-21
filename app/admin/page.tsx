@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 type SimType = "normal" | "premium" | "vip";
+type SimStatus = "available" | "sold";
 
 type SimItem = {
   id: number;
@@ -11,14 +12,9 @@ type SimItem = {
   type: SimType;
   isOnSale: boolean;
   salePrice: number | null;
+  status: SimStatus;
   createdAt: string;
 };
-
-function getTypeFromPrice(price: number): SimType {
-  if (price >= 10000) return "vip";
-  if (price >= 5000) return "premium";
-  return "normal";
-}
 
 function formatPrice(value: number | null) {
   if (value === null) return "-";
@@ -49,11 +45,29 @@ function getTypeBadge(type: SimType) {
   );
 }
 
+function getStatusBadge(status: SimStatus) {
+  if (status === "sold") {
+    return (
+      <span className="inline-flex rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-xs font-medium text-white/80">
+        Sold
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex rounded-full border border-green-400/30 bg-green-400/10 px-2.5 py-1 text-xs font-medium text-green-300">
+      Available
+    </span>
+  );
+}
+
 export default function AdminPage() {
   const [number, setNumber] = useState("");
   const [price, setPrice] = useState(1000);
+  const [type, setType] = useState<SimType>("normal");
   const [isOnSale, setIsOnSale] = useState(false);
   const [salePrice, setSalePrice] = useState("");
+  const [status, setStatus] = useState<SimStatus>("available");
   const [list, setList] = useState<SimItem[]>([]);
   const [search, setSearch] = useState("");
 
@@ -61,6 +75,11 @@ export default function AdminPage() {
     const stored = JSON.parse(localStorage.getItem("sim_numbers") || "[]");
     setList(stored);
   }, []);
+
+  const saveList = (updated: SimItem[]) => {
+    localStorage.setItem("sim_numbers", JSON.stringify(updated));
+    setList(updated);
+  };
 
   const addNumber = () => {
     const cleanNumber = number.trim();
@@ -100,49 +119,60 @@ export default function AdminPage() {
       id: Date.now(),
       number: cleanNumber,
       price,
-      type: getTypeFromPrice(price),
+      type,
       isOnSale,
       salePrice: finalSalePrice,
+      status,
       createdAt: new Date().toISOString(),
     };
 
-    const updated = [newItem, ...list];
-    localStorage.setItem("sim_numbers", JSON.stringify(updated));
-    setList(updated);
+    saveList([newItem, ...list]);
 
     setNumber("");
     setPrice(1000);
+    setType("normal");
     setIsOnSale(false);
     setSalePrice("");
+    setStatus("available");
   };
 
   const deleteNumber = (id: number) => {
     const ok = window.confirm("Delete this number?");
     if (!ok) return;
 
-    const updated = list.filter((item) => item.id !== id);
-    localStorage.setItem("sim_numbers", JSON.stringify(updated));
-    setList(updated);
+    saveList(list.filter((item) => item.id !== id));
+  };
+
+  const toggleSoldStatus = (id: number) => {
+    const updated = list.map((item) => {
+      if (item.id !== id) return item;
+
+      if (item.status === "sold") {
+        return { ...item, status: "available" as SimStatus };
+      }
+
+      return { ...item, status: "sold" as SimStatus };
+    });
+
+    saveList(updated);
   };
 
   const filteredList = useMemo(() => {
     const keyword = search.trim();
     if (!keyword) return list;
-
     return list.filter((item) => item.number.includes(keyword));
   }, [list, search]);
 
   const stats = useMemo(() => {
-    const total = list.length;
-    const normal = list.filter((item) => item.type === "normal").length;
-    const premium = list.filter((item) => item.type === "premium").length;
-    const vip = list.filter((item) => item.type === "vip").length;
-    const onSale = list.filter((item) => item.isOnSale).length;
-
-    return { total, normal, premium, vip, onSale };
+    return {
+      total: list.length,
+      normal: list.filter((item) => item.type === "normal").length,
+      premium: list.filter((item) => item.type === "premium").length,
+      vip: list.filter((item) => item.type === "vip").length,
+      onSale: list.filter((item) => item.isOnSale).length,
+      sold: list.filter((item) => item.status === "sold").length,
+    };
   }, [list]);
-
-  const previewType = getTypeFromPrice(price);
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#05081f] text-white">
@@ -160,7 +190,7 @@ export default function AdminPage() {
               SIM Store Control Panel
             </h1>
             <p className="mt-4 max-w-2xl text-base leading-8 text-white/75 md:text-lg">
-              Add, price, and manage Taurus SIM numbers for your marketplace.
+              Add, price, discount, and control sold status for Taurus SIM numbers.
             </p>
           </div>
 
@@ -169,40 +199,35 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <div className="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
-            <div className="text-sm text-white/60">Total Numbers</div>
-            <div className="mt-2 text-3xl font-bold text-cyan-300">
-              {stats.total}
-            </div>
+            <div className="text-sm text-white/60">Total</div>
+            <div className="mt-2 text-3xl font-bold text-cyan-300">{stats.total}</div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <div className="text-sm text-white/60">Normal</div>
-            <div className="mt-2 text-3xl font-bold text-cyan-300">
-              {stats.normal}
-            </div>
+            <div className="mt-2 text-3xl font-bold text-cyan-300">{stats.normal}</div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <div className="text-sm text-white/60">Premium</div>
-            <div className="mt-2 text-3xl font-bold text-yellow-300">
-              {stats.premium}
-            </div>
+            <div className="mt-2 text-3xl font-bold text-yellow-300">{stats.premium}</div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <div className="text-sm text-white/60">VIP</div>
-            <div className="mt-2 text-3xl font-bold text-red-300">
-              {stats.vip}
-            </div>
+            <div className="mt-2 text-3xl font-bold text-red-300">{stats.vip}</div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <div className="text-sm text-white/60">On Sale</div>
-            <div className="mt-2 text-3xl font-bold text-green-300">
-              {stats.onSale}
-            </div>
+            <div className="mt-2 text-3xl font-bold text-green-300">{stats.onSale}</div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
+            <div className="text-sm text-white/60">Sold</div>
+            <div className="mt-2 text-3xl font-bold text-white">{stats.sold}</div>
           </div>
         </div>
 
@@ -216,7 +241,7 @@ export default function AdminPage() {
                 </p>
               </div>
 
-              <div>{getTypeBadge(previewType)}</div>
+              <div>{getTypeBadge(type)}</div>
             </div>
 
             <div className="grid gap-5">
@@ -242,58 +267,91 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              <div>
-                <label className="mb-2 block text-sm font-medium text-cyan-200">
-                  Main Price
-                </label>
-                <input
-                  type="number"
-                  value={price}
-                  onChange={(e) => setPrice(Number(e.target.value))}
-                  className="w-full rounded-2xl border border-white/10 bg-[#0b1228] px-4 py-3 text-white outline-none transition focus:border-cyan-400/40"
-                />
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-[#0b1228] p-4">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-medium text-white">
-                      Sale Mode
-                    </div>
-                    <div className="mt-1 text-xs text-white/50">
-                      Enable discount pricing for this SIM.
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsOnSale((prev) => !prev)}
-                    className={`relative h-8 w-16 rounded-full transition ${
-                      isOnSale ? "bg-green-500/80" : "bg-white/10"
-                    }`}
-                  >
-                    <span
-                      className={`absolute top-1 h-6 w-6 rounded-full bg-white transition ${
-                        isOnSale ? "left-9" : "left-1"
-                      }`}
-                    />
-                  </button>
+              <div className="grid gap-5 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-cyan-200">
+                    Main Price
+                  </label>
+                  <input
+                    type="number"
+                    value={price}
+                    onChange={(e) => setPrice(Number(e.target.value))}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0b1228] px-4 py-3 text-white outline-none transition focus:border-cyan-400/40"
+                  />
                 </div>
 
-                {isOnSale && (
-                  <div className="mt-4">
-                    <label className="mb-2 block text-sm font-medium text-green-200">
-                      Sale Price
-                    </label>
-                    <input
-                      type="number"
-                      value={salePrice}
-                      onChange={(e) => setSalePrice(e.target.value)}
-                      className="w-full rounded-2xl border border-white/10 bg-[#0f1730] px-4 py-3 text-white outline-none transition focus:border-green-400/40"
-                      placeholder="800"
-                    />
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-cyan-200">
+                    Type
+                  </label>
+                  <select
+                    value={type}
+                    onChange={(e) => setType(e.target.value as SimType)}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0b1228] px-4 py-3 text-white outline-none transition focus:border-cyan-400/40"
+                  >
+                    <option value="normal">Normal</option>
+                    <option value="premium">Premium</option>
+                    <option value="vip">VIP</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid gap-5 md:grid-cols-2">
+                <div className="rounded-2xl border border-white/10 bg-[#0b1228] p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm font-medium text-white">Sale Mode</div>
+                      <div className="mt-1 text-xs text-white/50">
+                        Enable discount pricing for this SIM.
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsOnSale((prev) => !prev)}
+                      className={`relative h-8 w-16 rounded-full transition ${
+                        isOnSale ? "bg-green-500/80" : "bg-white/10"
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-1 h-6 w-6 rounded-full bg-white transition ${
+                          isOnSale ? "left-9" : "left-1"
+                        }`}
+                      />
+                    </button>
                   </div>
-                )}
+
+                  {isOnSale && (
+                    <div className="mt-4">
+                      <label className="mb-2 block text-sm font-medium text-green-200">
+                        Sale Price
+                      </label>
+                      <input
+                        type="number"
+                        value={salePrice}
+                        onChange={(e) => setSalePrice(e.target.value)}
+                        className="w-full rounded-2xl border border-white/10 bg-[#0f1730] px-4 py-3 text-white outline-none transition focus:border-green-400/40"
+                        placeholder="800"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-[#0b1228] p-4">
+                  <label className="mb-2 block text-sm font-medium text-cyan-200">
+                    Status
+                  </label>
+                  <select
+                    value={status}
+                    onChange={(e) => setStatus(e.target.value as SimStatus)}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0f1730] px-4 py-3 text-white outline-none transition focus:border-cyan-400/40"
+                  >
+                    <option value="available">Available</option>
+                    <option value="sold">Sold</option>
+                  </select>
+
+                  <div className="mt-4">{getStatusBadge(status)}</div>
+                </div>
               </div>
 
               <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 p-4">
@@ -302,7 +360,10 @@ export default function AdminPage() {
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
-                  <div className="mb-3">{getTypeBadge(previewType)}</div>
+                  <div className="mb-3 flex items-center gap-2">
+                    {getTypeBadge(type)}
+                    {getStatusBadge(status)}
+                  </div>
 
                   <div className="text-lg font-semibold text-white">
                     +70 20 {number || "0000000"}
@@ -372,7 +433,15 @@ export default function AdminPage() {
                     className="rounded-2xl border border-white/10 bg-[#0b1228] p-5"
                   >
                     <div className="mb-3 flex items-start justify-between gap-3">
-                      <div>{getTypeBadge(item.type)}</div>
+                      <div className="flex flex-wrap gap-2">
+                        {getTypeBadge(item.type)}
+                        {getStatusBadge(item.status)}
+                        {item.isOnSale && (
+                          <span className="inline-flex rounded-full border border-green-400/20 bg-green-400/10 px-2.5 py-1 text-xs font-medium text-green-300">
+                            Sale
+                          </span>
+                        )}
+                      </div>
 
                       <button
                         onClick={() => deleteNumber(item.id)}
@@ -389,14 +458,10 @@ export default function AdminPage() {
                     <div className="mt-3 space-y-1 text-sm text-white/60">
                       <div>Main Price: {formatPrice(item.price)}</div>
                       <div>
-                        Sale Price:{" "}
-                        {item.isOnSale
-                          ? formatPrice(item.salePrice)
-                          : "Not on sale"}
+                        Sale Price: {item.isOnSale ? formatPrice(item.salePrice) : "Not on sale"}
                       </div>
-                      <div>
-                        Added: {new Date(item.createdAt).toLocaleString()}
-                      </div>
+                      <div>Status: {item.status === "sold" ? "Sale completed" : "Available now"}</div>
+                      <div>Added: {new Date(item.createdAt).toLocaleString()}</div>
                     </div>
 
                     <div className="mt-4">
@@ -408,15 +473,25 @@ export default function AdminPage() {
                           <span className="text-lg font-bold text-green-300">
                             {item.salePrice.toLocaleString()} TAT
                           </span>
-                          <span className="rounded-full border border-green-400/20 bg-green-400/10 px-2 py-1 text-xs font-medium text-green-300">
-                            SALE
-                          </span>
                         </div>
                       ) : (
                         <div className="text-lg font-bold text-cyan-300">
                           {item.price.toLocaleString()} TAT
                         </div>
                       )}
+                    </div>
+
+                    <div className="mt-4 flex gap-3">
+                      <button
+                        onClick={() => toggleSoldStatus(item.id)}
+                        className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                          item.status === "sold"
+                            ? "border border-cyan-400/25 bg-cyan-400/10 text-cyan-200 hover:bg-cyan-400/15"
+                            : "border border-white/10 bg-white/5 text-white hover:bg-white/10"
+                        }`}
+                      >
+                        {item.status === "sold" ? "Mark Available" : "Mark Sold"}
+                      </button>
                     </div>
                   </div>
                 ))
