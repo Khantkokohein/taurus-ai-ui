@@ -1,43 +1,44 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-function generateSuffix(): string {
-  return Math.floor(Math.random() * 10000000)
-    .toString()
-    .padStart(7, "0");
+function generateTaurusNumber() {
+  const random = Math.floor(1000000 + Math.random() * 9000000);
+  return `+70 20 ${random}`;
 }
 
-function detectPattern(s: string) {
-  const set = new Set(s);
+export async function GET() {
+  try {
+    const phoneNumber = generateTaurusNumber();
 
-  if (set.size === 1) return "7-same";
-  if (s === s.split("").reverse().join("")) return "mirror";
-  if (/(\d)\1{3}/.test(s)) return "repeating";
-
-  return "general";
-}
-
-export async function POST() {
-  let suffix = "";
-  let exists = true;
-
-  while (exists) {
-    suffix = generateSuffix();
-
-    const { data } = await supabase
+    const { data, error } = await supabaseAdmin
       .from("numbers")
-      .select("id")
-      .eq("suffix_7", suffix)
-      .limit(1);
+      .insert([
+        {
+          phone_number: phoneNumber,
+          status: "available",
+        },
+      ])
+      .select()
+      .single();
 
-    exists = !!(data && data.length > 0);
+    if (error) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      number: data,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unknown server error";
+
+    return NextResponse.json(
+      { error: message },
+      { status: 500 }
+    );
   }
-
-  const fullNumber = `+7020${suffix}`;
-
-  return NextResponse.json({
-    number: fullNumber,
-    suffix_7: suffix,
-    pattern: detectPattern(suffix),
-  });
 }

@@ -23,6 +23,12 @@ export default function Home() {
       external: false,
     },
     {
+      name: "Taurus Sim Store",
+      href: "/sim-store",
+      clickable: true,
+      external: false,
+    },
+    {
       name: "Taurus Market",
       href: "#",
       clickable: false,
