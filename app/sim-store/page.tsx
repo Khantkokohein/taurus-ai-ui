@@ -321,6 +321,7 @@ export default function SimStorePage() {
       }
 
       const { error: ownershipError } = await supabase.from("ownership").insert({
+         number_id: selected.id,
         number: selected.number,
         owner_name: form.full_name.trim(),
         owner_nrc: form.nrc.trim(),
