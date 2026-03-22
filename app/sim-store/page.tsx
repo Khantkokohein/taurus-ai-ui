@@ -248,11 +248,9 @@ export default function SimStorePage() {
   );
 
   function validateStep(currentStep: number) {
-    if (currentStep === 1) {
-      if (!selected) {
-        alert("Please select a SIM number");
-        return false;
-      }
+    if (currentStep === 1 && !selected) {
+      alert("Please select a SIM number");
+      return false;
     }
 
     if (currentStep === 2) {
@@ -269,18 +267,14 @@ export default function SimStorePage() {
       }
     }
 
-    if (currentStep === 3) {
-      if (!selfieFile) {
-        alert("Please upload a selfie / face photo");
-        return false;
-      }
+    if (currentStep === 3 && !selfieFile) {
+      alert("Please upload a selfie / face photo");
+      return false;
     }
 
-    if (currentStep === 4) {
-      if (!nrcFrontFile || !nrcBackFile) {
-        alert("Please upload NRC front and back images");
-        return false;
-      }
+    if (currentStep === 4 && (!nrcFrontFile || !nrcBackFile)) {
+      alert("Please upload NRC front and back images");
+      return false;
     }
 
     return true;
@@ -300,12 +294,10 @@ export default function SimStorePage() {
     const safeNumber = selected?.number?.replace(/\s+/g, "") || "unknown";
     const filename = `${folder}/${deviceId}-${safeNumber}-${Date.now()}.${ext}`;
 
-    const { error } = await supabase.storage
-      .from(bucket)
-      .upload(filename, file, {
-        cacheControl: "3600",
-        upsert: false,
-      });
+    const { error } = await supabase.storage.from(bucket).upload(filename, file, {
+      cacheControl: "3600",
+      upsert: false,
+    });
 
     if (error) {
       throw new Error(`${bucket} upload failed: ${error.message}`);
@@ -318,118 +310,37 @@ export default function SimStorePage() {
   async function confirmOwnership() {
     if (!selected) return;
 
-    if (!validateStep(2) || !validateStep(3) || !validateStep(4)) {
-      return;
-    }
+    if (!validateStep(2) || !validateStep(3) || !validateStep(4)) return;
 
     setLoading(true);
 
     try {
       const currentDeviceId = deviceId || initDevice();
 
-      const { data: existingOwnership, error: ownershipCheckError } =
-        await supabase
-          .from("ownership")
-          .select("id")
-          .eq("device_id", currentDeviceId)
-          .eq("active", true)
-          .limit(1);
+      const selfieUrl = await uploadImage(selfieFile!, "sim-selfies", "selfies");
+      const nrcFrontUrl = await uploadImage(nrcFrontFile!, "sim-nrc", "nrc-front");
+      const nrcBackUrl = await uploadImage(nrcBackFile!, "sim-nrc", "nrc-back");
 
-      if (ownershipCheckError) {
-        throw new Error(
-          `Ownership check failed: ${ownershipCheckError.message}`
-        );
-      }
+      const res = await fetch("/api/sim-register", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          selectedId: selected.id,
+          selectedNumber: selected.number,
+          form,
+          deviceId: currentDeviceId,
+          selfieUrl,
+          nrcFrontUrl,
+          nrcBackUrl,
+        }),
+      });
 
-      if (existingOwnership && existingOwnership.length > 0) {
-        throw new Error("This device already owns a SIM");
-      }
+      const result = await res.json();
 
-      const { data: currentNumber, error: numberCheckError } = await supabase
-        .from("numbers")
-        .select("id, status, number")
-        .eq("id", selected.id)
-        .single();
-
-      if (numberCheckError) {
-        throw new Error(`Number check failed: ${numberCheckError.message}`);
-      }
-
-      if (!currentNumber || currentNumber.status !== "available") {
-        await loadNumbers();
-        throw new Error("This SIM is no longer available");
-      }
-
-      const selfieUrl = await uploadImage(
-        selfieFile!,
-        "sim-selfies",
-        "selfies"
-      );
-      const nrcFrontUrl = await uploadImage(
-        nrcFrontFile!,
-        "sim-nrc",
-        "nrc-front"
-      );
-      const nrcBackUrl = await uploadImage(
-        nrcBackFile!,
-        "sim-nrc",
-        "nrc-back"
-      );
-
-      const registrationPayload = {
-        number: selected.number,
-        full_name: form.full_name.trim(),
-        age: form.age.trim(),
-        nrc: form.nrc.trim(),
-        address: form.address.trim(),
-        father_name: form.father_name.trim(),
-        job: form.job.trim(),
-        device_id: currentDeviceId,
-        selfie_url: selfieUrl,
-        nrc_front_url: nrcFrontUrl,
-        nrc_back_url: nrcBackUrl,
-        status: "approved",
-      };
-
-      const { data: registrationInsert, error: registrationError } =
-        await supabase
-          .from("sim_registrations")
-          .insert([registrationPayload])
-          .select("id")
-          .single();
-
-      if (registrationError) {
-        throw new Error(
-          `Registration save failed: ${registrationError.message}`
-        );
-      }
-
-      const ownershipPayload = {
-        user_id: null,
-        number_id: selected.id,
-        owner_name: form.full_name.trim(),
-        owner_nrc: form.nrc.trim(),
-        owner_note: null,
-        device_id: currentDeviceId,
-        registration_id: registrationInsert.id,
-        active: true,
-      };
-
-      const { error: ownershipError } = await supabase
-        .from("ownership")
-        .insert([ownershipPayload]);
-
-      if (ownershipError) {
-        throw new Error(`Ownership save failed: ${ownershipError.message}`);
-      }
-
-      const { error: updateNumberError } = await supabase
-        .from("numbers")
-        .update({ status: "sold" })
-        .eq("id", selected.id);
-
-      if (updateNumberError) {
-        throw new Error(`Number update failed: ${updateNumberError.message}`);
+      if (!res.ok) {
+        throw new Error(result.error || "Registration failed");
       }
 
       alert("✅ SIM Ownership Activated Successfully");
@@ -438,9 +349,7 @@ export default function SimStorePage() {
     } catch (error) {
       console.error("SIM register error:", error);
       alert(
-        error instanceof Error
-          ? `❌ ${error.message}`
-          : "❌ Something went wrong"
+        error instanceof Error ? `❌ ${error.message}` : "❌ Something went wrong"
       );
       setLoading(false);
     }
@@ -562,13 +471,9 @@ export default function SimStorePage() {
                   <div className="mb-3 flex items-center justify-between">
                     <div className="text-sm">
                       {n.status === "sold" ? (
-                        <span className="font-semibold text-red-300">
-                          ● Owned
-                        </span>
+                        <span className="font-semibold text-red-300">● Owned</span>
                       ) : (
-                        <span className="font-semibold text-green-300">
-                          ● Available
-                        </span>
+                        <span className="font-semibold text-green-300">● Available</span>
                       )}
                     </div>
                     <div className="text-xs text-white/45">1 Device = 1 SIM</div>
@@ -577,9 +482,7 @@ export default function SimStorePage() {
                   <div className="mb-5">
                     {n.is_giveaway ? (
                       <div className="flex items-center gap-2">
-                        <span className="text-lg font-bold text-yellow-300">
-                          FREE
-                        </span>
+                        <span className="text-lg font-bold text-yellow-300">FREE</span>
                         <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-[10px] font-medium text-yellow-300">
                           GIVEAWAY
                         </span>
@@ -638,9 +541,7 @@ export default function SimStorePage() {
 
                   <div className="mt-3 flex items-center justify-between">
                     <div className="text-sm">
-                      <span className="font-semibold text-green-300">
-                        ● Available
-                      </span>
+                      <span className="font-semibold text-green-300">● Available</span>
                     </div>
                     <div className="text-[10px] font-bold tracking-[0.16em] text-white/45">
                       {getBadge(n)}
@@ -650,9 +551,7 @@ export default function SimStorePage() {
                   <div className="mt-4">
                     {n.is_giveaway ? (
                       <div className="flex items-center gap-2">
-                        <span className="text-lg font-bold text-yellow-300">
-                          FREE
-                        </span>
+                        <span className="text-lg font-bold text-yellow-300">FREE</span>
                         <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-[10px] font-medium text-yellow-300">
                           GIVEAWAY
                         </span>
@@ -703,9 +602,7 @@ export default function SimStorePage() {
                   <div className="mt-2 text-2xl font-black tracking-[0.14em] text-white/80">
                     +70 20 {n.number}
                   </div>
-                  <div className="mt-3 text-sm font-semibold text-red-300">
-                    ● Owned
-                  </div>
+                  <div className="mt-3 text-sm font-semibold text-red-300">● Owned</div>
                 </div>
               ))}
             </div>
@@ -844,9 +741,7 @@ export default function SimStorePage() {
             {step === 5 && (
               <div className="space-y-4">
                 <div className="rounded-[26px] border border-white/10 bg-white/5 p-5">
-                  <div className="mb-4 text-lg font-bold">
-                    Review Information
-                  </div>
+                  <div className="mb-4 text-lg font-bold">Review Information</div>
 
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <ReviewItem
@@ -859,10 +754,7 @@ export default function SimStorePage() {
                     <ReviewItem label="NRC / ID" value={form.nrc} />
                     <ReviewItem label="Occupation" value={form.job} />
                     <ReviewItem label="Address" value={form.address} />
-                    <ReviewItem
-                      label="Father Name"
-                      value={form.father_name}
-                    />
+                    <ReviewItem label="Father Name" value={form.father_name} />
                   </div>
                 </div>
 
@@ -970,12 +862,8 @@ function UploadCard({
           />
         ) : (
           <div className="text-center">
-            <div className="mb-2 text-sm font-bold text-cyan-300">
-              Tap to Upload
-            </div>
-            <div className="text-xs text-white/45">
-              PNG, JPG, JPEG under 5MB
-            </div>
+            <div className="mb-2 text-sm font-bold text-cyan-300">Tap to Upload</div>
+            <div className="text-xs text-white/45">PNG, JPG, JPEG under 5MB</div>
           </div>
         )}
       </label>
@@ -997,9 +885,7 @@ function ReviewItem({ label, value }: { label: string; value: string }) {
       <div className="mb-1 text-xs font-bold uppercase tracking-[0.16em] text-white/40">
         {label}
       </div>
-      <div className="break-words text-sm font-semibold text-white/85">
-        {value}
-      </div>
+      <div className="break-words text-sm font-semibold text-white/85">{value}</div>
     </div>
   );
 }
