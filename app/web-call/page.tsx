@@ -1,18 +1,18 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "../../lib/client";
 
 type TabKey = "favorites" | "recents" | "contacts" | "keypad" | "voicemail";
-type MessageView = "list" | "thread";
-type FontMode = "english" | "myanmar";
-
-type ContactItem = {
-  id: number;
-  name: string;
-  number: string;
-  avatar: string;
-  isFavorite?: boolean;
-};
+type CallPhase =
+  | "idle"
+  | "requesting-media"
+  | "calling"
+  | "incoming"
+  | "connecting"
+  | "in-call"
+  | "ended"
+  | "failed";
 
 type RecentItem = {
   id: number;
@@ -22,23 +22,37 @@ type RecentItem = {
   time: string;
 };
 
-type MessageItem = {
+type ContactItem = {
   id: number;
-  contactId: number;
-  text?: string;
-  image?: string;
-  sender: "me" | "them";
-  time: string;
-};
-
-type ContactForm = {
   name: string;
   number: string;
   avatar: string;
+  isFavorite?: boolean;
+};
+
+type IncomingOffer = {
+  from: string;
+  to: string;
+  sdp: RTCSessionDescriptionInit;
 };
 
 const PHONE_PREFIX = "+70 20 ";
-const PHONE_MAX_LENGTH = 14;
+const MAX_SUFFIX_DIGITS = 7;
+
+const TURN_SERVER_IP = "64.176.85.59";
+const TURN_SECRET = "taurus123";
+const SIGNAL_CHANNEL = "taurus-calls";
+
+const RTC_CONFIG: RTCConfiguration = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    {
+      urls: `turn:${TURN_SERVER_IP}:3478`,
+      username: "user",
+      credential: TURN_SECRET,
+    },
+  ],
+};
 
 const keypadRows = [
   [
@@ -63,31 +77,8 @@ const keypadRows = [
   ],
 ];
 
-// Bagan-style feel mini Myanmar keyboard rows
-const mmKeyboardRows = [
-  ["ဆ", "တ", "န", "မ", "အ", "ပ", "က", "င"],
-  ["ေ", "ျ", "ြ", "ါ", "ာ", "ိ", "ီ", "ု"],
-  ["ူ", "ဲ", "ံ", "့", "း", "်", "္", "ွ"],
-  ["ခ", "ဂ", "ဃ", "စ", "ဇ", "ည", "ဋ", "ဌ"],
-  ["ဒ", "ဓ", "ဖ", "ဗ", "ဘ", "ယ", "ရ", "လ"],
-  ["ဝ", "သ", "ဟ", "ဠ", "အ", "၍", "၏", "၊"],
-];
-
-const emojis = ["😀", "😂", "🥰", "❤️", "🔥", "👍", "🙏", "🎉", "🤝", "📞", "💬", "🇲🇲"];
-
 const defaultContacts: ContactItem[] = [];
-const defaultMessages: MessageItem[] = [];
 const defaultRecents: RecentItem[] = [];
-
-const initialContactForm: ContactForm = {
-  name: "",
-  number: "",
-  avatar: "",
-};
-
-function getNowTimeLabel() {
-  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
 
 function safeJsonParse<T>(value: string | null, fallback: T): T {
   if (!value) return fallback;
@@ -98,149 +89,226 @@ function safeJsonParse<T>(value: string | null, fallback: T): T {
   }
 }
 
+function getNowTimeLabel() {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function getSuffix(value: string) {
+  if (!value.startsWith(PHONE_PREFIX)) return "";
+  return value.slice(PHONE_PREFIX.length);
+}
+
+function normalizeNumber(value: string) {
+  const digits = value.replace(/\D/g, "").slice(-7);
+  return `${PHONE_PREFIX}${digits}`;
+}
+
+function isValidTaurusNumber(value: string) {
+  return /^\+70 20 \d{7}$/.test(value);
+}
+
 function buildAvatar(name: string) {
   const trimmed = name.trim();
   return trimmed ? trimmed.charAt(0).toUpperCase() : "T";
 }
 
-function formatNumberForDisplay(input: string) {
-  if (!input.startsWith(PHONE_PREFIX)) return input;
-  const suffix = input.slice(PHONE_PREFIX.length);
-  return `${PHONE_PREFIX}${suffix}`;
-}
-
-export default function WebCallPage() {
-  const [hydrated, setHydrated] = useState(false);
-
+export default function CallPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("keypad");
-  const [phone, setPhone] = useState(PHONE_PREFIX);
-  const [isCalling, setIsCalling] = useState(false);
-  const [callStatus, setCallStatus] = useState("Enter number");
-  const [speakerOn, setSpeakerOn] = useState(false);
-  const [muted, setMuted] = useState(false);
-  const [fontMode, setFontMode] = useState<FontMode>("english");
-  const [showCallScreen, setShowCallScreen] = useState(false);
-  const [callSeconds, setCallSeconds] = useState(0);
+
+  const [myNumber, setMyNumber] = useState(PHONE_PREFIX);
+  const [targetNumber, setTargetNumber] = useState(PHONE_PREFIX);
 
   const [contacts, setContacts] = useState<ContactItem[]>(defaultContacts);
   const [recents, setRecents] = useState<RecentItem[]>(defaultRecents);
-  const [messages, setMessages] = useState<MessageItem[]>(defaultMessages);
-
-  const [messageView, setMessageView] = useState<MessageView>("list");
-  const [selectedChatId, setSelectedChatId] = useState<number | null>(null);
-  const [messageText, setMessageText] = useState("");
-  const [showEmoji, setShowEmoji] = useState(false);
-  const [showMyanmarKeyboard, setShowMyanmarKeyboard] = useState(false);
   const [contactSearch, setContactSearch] = useState("");
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
 
+  const [callPhase, setCallPhase] = useState<CallPhase>("idle");
+  const [callStatus, setCallStatus] = useState("Set your number and dial target");
+  const [showCallScreen, setShowCallScreen] = useState(false);
+  const [speakerOn, setSpeakerOn] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [callSeconds, setCallSeconds] = useState(0);
+
+  const [incomingOffer, setIncomingOffer] = useState<IncomingOffer | null>(null);
+  const [incomingFrom, setIncomingFrom] = useState("");
+  const [showIncomingModal, setShowIncomingModal] = useState(false);
+
+  const [contactName, setContactName] = useState("");
   const [showAddContactModal, setShowAddContactModal] = useState(false);
-  const [editingContactId, setEditingContactId] = useState<number | null>(null);
-  const [contactForm, setContactForm] = useState<ContactForm>(initialContactForm);
 
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const localAudioRef = useRef<HTMLAudioElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const peerRef = useRef<RTCPeerConnection | null>(null);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const currentRemoteRef = useRef<string>("");
 
   useEffect(() => {
     const storedContacts = safeJsonParse<ContactItem[]>(
-      localStorage.getItem("iphone_contacts"),
+      localStorage.getItem("taurus_contacts"),
       defaultContacts
     );
     const storedRecents = safeJsonParse<RecentItem[]>(
-      localStorage.getItem("iphone_recents"),
+      localStorage.getItem("taurus_recents"),
       defaultRecents
     );
-    const storedMessages = safeJsonParse<MessageItem[]>(
-      localStorage.getItem("iphone_messages"),
-      defaultMessages
-    );
-    const storedFont = safeJsonParse<FontMode>(
-      localStorage.getItem("iphone_font_mode"),
-      "english"
-    );
+    const storedMyNumber = localStorage.getItem("taurus_my_number");
+    const storedTarget = localStorage.getItem("taurus_target_number");
 
     setContacts(storedContacts);
     setRecents(storedRecents);
-    setMessages(storedMessages);
-    setFontMode(storedFont);
-    setHydrated(true);
+    if (storedMyNumber) setMyNumber(storedMyNumber);
+    if (storedTarget) setTargetNumber(storedTarget);
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
-    localStorage.setItem("iphone_contacts", JSON.stringify(contacts));
-  }, [contacts, hydrated]);
+    localStorage.setItem("taurus_contacts", JSON.stringify(contacts));
+  }, [contacts]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    localStorage.setItem("iphone_recents", JSON.stringify(recents));
-  }, [recents, hydrated]);
+    localStorage.setItem("taurus_recents", JSON.stringify(recents));
+  }, [recents]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    localStorage.setItem("iphone_messages", JSON.stringify(messages));
-  }, [messages, hydrated]);
+    localStorage.setItem("taurus_my_number", myNumber);
+  }, [myNumber]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    localStorage.setItem("iphone_font_mode", JSON.stringify(fontMode));
-  }, [fontMode, hydrated]);
+    localStorage.setItem("taurus_target_number", targetNumber);
+  }, [targetNumber]);
 
   useEffect(() => {
-    if (!showCallScreen) return;
-    const timer = window.setInterval(() => {
+    const channel = supabase.channel(SIGNAL_CHANNEL);
+
+    channel
+      .on("broadcast", { event: "offer" }, ({ payload }) => {
+        if (!payload?.to || payload.to !== myNumber) return;
+        if (!isValidTaurusNumber(myNumber)) return;
+
+        const offer: IncomingOffer = {
+          from: payload.from,
+          to: payload.to,
+          sdp: payload.sdp,
+        };
+
+        currentRemoteRef.current = payload.from;
+        setIncomingOffer(offer);
+        setIncomingFrom(payload.from);
+        setCallPhase("incoming");
+        setCallStatus(`Incoming call from ${payload.from}`);
+        setShowIncomingModal(true);
+      })
+      .on("broadcast", { event: "answer" }, async ({ payload }) => {
+        if (!payload?.to || payload.to !== myNumber) return;
+        if (!peerRef.current) return;
+
+        try {
+          await peerRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+
+          for (const c of pendingCandidatesRef.current) {
+            await peerRef.current.addIceCandidate(new RTCIceCandidate(c));
+          }
+          pendingCandidatesRef.current = [];
+
+          setCallPhase("connecting");
+          setCallStatus("Answer received. Connecting...");
+        } catch (error) {
+          console.error("answer error", error);
+          setCallPhase("failed");
+          setCallStatus("Answer failed");
+        }
+      })
+      .on("broadcast", { event: "ice-candidate" }, async ({ payload }) => {
+        if (!payload?.to || payload.to !== myNumber) return;
+        if (!payload?.candidate) return;
+
+        try {
+          if (!peerRef.current) return;
+
+          if (peerRef.current.remoteDescription) {
+            await peerRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate));
+          } else {
+            pendingCandidatesRef.current.push(payload.candidate);
+          }
+        } catch (error) {
+          console.error("ice error", error);
+        }
+      })
+      .on("broadcast", { event: "end-call" }, ({ payload }) => {
+        if (!payload?.to || payload.to !== myNumber) return;
+
+        cleanupCall();
+        setShowIncomingModal(false);
+        setShowCallScreen(false);
+        setCallPhase("ended");
+        setCallStatus("Remote user ended the call");
+      })
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          console.log("Realtime signaling ready");
+        }
+      });
+
+    channelRef.current = channel;
+
+    return () => {
+      if (channelRef.current) {
+        void supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
+      cleanupCall();
+    };
+  }, [myNumber]);
+
+  useEffect(() => {
+    if (!showCallScreen || callPhase !== "in-call") return;
+
+    timerRef.current = window.setInterval(() => {
       setCallSeconds((prev) => prev + 1);
     }, 1000);
-    return () => window.clearInterval(timer);
-  }, [showCallScreen]);
 
-  const fontClass =
-    fontMode === "myanmar"
-      ? "font-['Noto_Sans_Myanmar','Pyidaungsu','Myanmar_Text',system-ui,sans-serif]"
-      : "font-['Inter','SF_Pro_Display',system-ui,sans-serif]";
+    return () => {
+      if (timerRef.current) window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    };
+  }, [showCallScreen, callPhase]);
 
-  const cleanedNumber = useMemo(() => phone.replace(/\s+/g, ""), [phone]);
+  useEffect(() => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach((track) => {
+        track.enabled = !muted;
+      });
+    }
+  }, [muted]);
+
+  useEffect(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.volume = speakerOn ? 1 : 0.75;
+    }
+  }, [speakerOn]);
 
   const filteredContacts = useMemo(() => {
     const q = contactSearch.trim().toLowerCase();
     if (!q) return contacts;
+
     return contacts.filter(
       (c) => c.name.toLowerCase().includes(q) || c.number.toLowerCase().includes(q)
     );
   }, [contacts, contactSearch]);
 
-  const selectedContact = useMemo(
-    () => contacts.find((c) => c.id === selectedChatId) || null,
-    [contacts, selectedChatId]
-  );
-
-  const selectedMessages = useMemo(
-    () => messages.filter((m) => m.contactId === selectedChatId),
-    [messages, selectedChatId]
-  );
-
   const favoriteContacts = useMemo(
-    () => contacts.filter((contact) => contact.isFavorite),
+    () => contacts.filter((c) => c.isFavorite),
     [contacts]
   );
 
-  const messageThreads = useMemo(() => {
-    return contacts
-      .filter((contact) => messages.some((m) => m.contactId === contact.id))
-      .map((contact) => {
-        const threadMessages = messages.filter((m) => m.contactId === contact.id);
-        const last = threadMessages[threadMessages.length - 1];
-        return {
-          contact,
-          preview: last?.text || (last?.image ? "Photo" : ""),
-          time: last?.time || "",
-        };
-      });
-  }, [contacts, messages]);
-
   const activeCallName = useMemo(() => {
-    const found = contacts.find((c) => c.number === phone);
-    return found?.name || "Unknown";
-  }, [contacts, phone]);
+    const found = contacts.find((c) => c.number === currentRemoteRef.current);
+    return found?.name || currentRemoteRef.current || "Unknown";
+  }, [contacts, currentRemoteRef.current, callPhase]);
 
   const formattedDuration = useMemo(() => {
     const mins = Math.floor(callSeconds / 60)
@@ -250,216 +318,301 @@ export default function WebCallPage() {
     return `${mins}:${secs}`;
   }, [callSeconds]);
 
-  const appendDial = (value: string) => {
-    if (isCalling) return;
-    const next = `${phone}${value}`;
-    if (next.replace(/\s+/g, "").length > PHONE_MAX_LENGTH) return;
-    setPhone(next);
-    setCallStatus("Ready to call");
-  };
-
-  const deleteDial = () => {
-    if (isCalling) return;
-    if (phone.length <= PHONE_PREFIX.length) return;
-    const next = phone.slice(0, -1);
-    setPhone(next);
-    setCallStatus(
-      next.replace(/\s+/g, "").length > PHONE_PREFIX.replace(/\s+/g, "").length
-        ? "Ready to call"
-        : "Enter number"
-    );
-  };
-
-  const clearDial = () => {
-    if (isCalling) return;
-    setPhone(PHONE_PREFIX);
-    setCallStatus("Enter number");
-  };
-
-  const addRecentCall = (number: string, type: "incoming" | "outgoing" | "missed") => {
+  function addRecent(number: string, type: "incoming" | "outgoing" | "missed") {
     const matched = contacts.find((c) => c.number === number);
-    const entry: RecentItem = {
+    const item: RecentItem = {
       id: Date.now(),
       name: matched?.name || "Unknown",
       number,
       type,
       time: getNowTimeLabel(),
     };
-    setRecents((prev) => [entry, ...prev]);
-  };
+    setRecents((prev) => [item, ...prev]);
+  }
 
-  const placeCall = () => {
-    if (cleanedNumber.length < 8) return;
-    setIsCalling(true);
-    setShowCallScreen(true);
+  function cleanupCall() {
+    if (timerRef.current) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    if (peerRef.current) {
+      peerRef.current.onicecandidate = null;
+      peerRef.current.ontrack = null;
+      peerRef.current.onconnectionstatechange = null;
+      peerRef.current.close();
+      peerRef.current = null;
+    }
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+
+    if (remoteStreamRef.current) {
+      remoteStreamRef.current.getTracks().forEach((track) => track.stop());
+      remoteStreamRef.current = null;
+    }
+
+    if (localAudioRef.current) localAudioRef.current.srcObject = null;
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+
+    pendingCandidatesRef.current = [];
     setCallSeconds(0);
     setMuted(false);
-    setCallStatus(speakerOn ? "Calling on speaker..." : "Calling...");
-    addRecentCall(phone, "outgoing");
-  };
+  }
 
-  const endCall = () => {
-    setIsCalling(false);
-    setShowCallScreen(false);
-    setCallSeconds(0);
-    setCallStatus("Call ended");
-  };
+  async function sendSignal(event: "offer" | "answer" | "ice-candidate" | "end-call", payload: any) {
+    if (!channelRef.current) return;
 
-  const openThread = (contactId: number) => {
-    setSelectedChatId(contactId);
-    setMessageView("thread");
-  };
+    const result = await channelRef.current.send({
+      type: "broadcast",
+      event,
+      payload,
+    });
 
-  const appendMessageText = (value: string) => {
-    setMessageText((prev) => prev + value);
-  };
+    if (result !== "ok") {
+      console.error("signal send failed", event, result);
+    }
+  }
 
-  const deleteMessageChar = () => {
-    setMessageText((prev) => prev.slice(0, -1));
-  };
+  async function buildPeerConnection(remoteNumber: string) {
+    const peer = new RTCPeerConnection(RTC_CONFIG);
+    const remoteStream = new MediaStream();
 
-  const sendMessage = () => {
-    if (!selectedChatId) return;
-    const trimmed = messageText.trim();
+    currentRemoteRef.current = remoteNumber;
+    peerRef.current = peer;
+    remoteStreamRef.current = remoteStream;
 
-    if (!trimmed && !selectedImage) return;
+    peer.ontrack = (event) => {
+      event.streams[0]?.getTracks().forEach((track) => {
+        remoteStream.addTrack(track);
+      });
 
-    const now = getNowTimeLabel();
-
-    const nextMessage: MessageItem = {
-      id: Date.now(),
-      contactId: selectedChatId,
-      text: trimmed || undefined,
-      image: selectedImage || undefined,
-      sender: "me",
-      time: now,
-    };
-
-    setMessages((prev) => [...prev, nextMessage]);
-    setMessageText("");
-    setSelectedImage(null);
-    setShowEmoji(false);
-    setShowMyanmarKeyboard(false);
-  };
-
-  const triggerImagePicker = () => {
-    imageInputRef.current?.click();
-  };
-
-  const onSelectImage = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        setSelectedImage(reader.result);
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = remoteStream;
+        void remoteAudioRef.current.play().catch(() => {});
       }
     };
-    reader.readAsDataURL(file);
-  };
 
-  const resetContactModal = () => {
-    setShowAddContactModal(false);
-    setEditingContactId(null);
-    setContactForm(initialContactForm);
-  };
+    peer.onicecandidate = async (event) => {
+      if (!event.candidate) return;
 
-  const openAddContactModal = (prefillNumber?: string) => {
-    setEditingContactId(null);
-    setContactForm({
-      name: "",
-      number: prefillNumber || phone,
-      avatar: "",
+      await sendSignal("ice-candidate", {
+        from: myNumber,
+        to: remoteNumber,
+        candidate: event.candidate.toJSON(),
+      });
+    };
+
+    peer.onconnectionstatechange = () => {
+      const state = peer.connectionState;
+
+      if (state === "connected") {
+        setCallPhase("in-call");
+        setCallStatus("Connected");
+      } else if (state === "connecting") {
+        setCallPhase("connecting");
+        setCallStatus("Connecting...");
+      } else if (state === "failed" || state === "disconnected") {
+        setCallPhase("failed");
+        setCallStatus("Call failed");
+      }
+    };
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    localStreamRef.current = stream;
+
+    stream.getTracks().forEach((track) => {
+      peer.addTrack(track, stream);
     });
-    setShowAddContactModal(true);
-  };
 
-  const openEditContactModal = (contact: ContactItem) => {
-    setEditingContactId(contact.id);
-    setContactForm({
-      name: contact.name,
-      number: contact.number,
-      avatar: contact.avatar,
-    });
-    setShowAddContactModal(true);
-  };
+    if (localAudioRef.current) {
+      localAudioRef.current.srcObject = stream;
+      localAudioRef.current.muted = true;
+    }
 
-  const saveContact = () => {
-    const name = contactForm.name.trim();
-    const number = contactForm.number.trim();
+    return peer;
+  }
 
-    if (!name || !number) {
-      alert("Name and number are required.");
+  async function placeCall() {
+    if (!isValidTaurusNumber(myNumber)) {
+      setCallStatus("Set valid My Number first");
       return;
     }
 
-    if (editingContactId) {
-      setContacts((prev) =>
-        prev.map((item) =>
-          item.id === editingContactId
-            ? {
-                ...item,
-                name,
-                number,
-                avatar: contactForm.avatar.trim() || buildAvatar(name),
-              }
-            : item
-        )
-      );
-    } else {
-      const newContact: ContactItem = {
-        id: Date.now(),
-        name,
-        number,
-        avatar: contactForm.avatar.trim() || buildAvatar(name),
-        isFavorite: false,
-      };
-      setContacts((prev) => [newContact, ...prev]);
+    if (!isValidTaurusNumber(targetNumber)) {
+      setCallStatus("Enter valid target number");
+      return;
     }
 
-    resetContactModal();
-  };
+    if (myNumber === targetNumber) {
+      setCallStatus("My Number and Target cannot be the same");
+      return;
+    }
 
-  const deleteContact = (contactId: number) => {
+    try {
+      cleanupCall();
+      setShowCallScreen(true);
+      setCallPhase("requesting-media");
+      setCallStatus("Requesting microphone...");
+
+      const peer = await buildPeerConnection(targetNumber);
+
+      setCallPhase("calling");
+      setCallStatus("Creating offer...");
+
+      const offer = await peer.createOffer({
+        offerToReceiveAudio: true,
+      });
+
+      await peer.setLocalDescription(offer);
+
+      addRecent(targetNumber, "outgoing");
+
+      await sendSignal("offer", {
+        from: myNumber,
+        to: targetNumber,
+        sdp: offer,
+      });
+
+      setCallStatus("Calling...");
+      currentRemoteRef.current = targetNumber;
+    } catch (error) {
+      console.error("place call failed", error);
+      cleanupCall();
+      setShowCallScreen(false);
+      setCallPhase("failed");
+      setCallStatus("Failed to start call");
+    }
+  }
+
+  async function acceptIncomingCall() {
+    if (!incomingOffer) return;
+
+    try {
+      setShowIncomingModal(false);
+      setShowCallScreen(true);
+      setCallPhase("requesting-media");
+      setCallStatus("Preparing answer...");
+
+      const peer = await buildPeerConnection(incomingOffer.from);
+
+      await peer.setRemoteDescription(new RTCSessionDescription(incomingOffer.sdp));
+
+      for (const c of pendingCandidatesRef.current) {
+        await peer.addIceCandidate(new RTCIceCandidate(c));
+      }
+      pendingCandidatesRef.current = [];
+
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+
+      addRecent(incomingOffer.from, "incoming");
+
+      await sendSignal("answer", {
+        from: myNumber,
+        to: incomingOffer.from,
+        sdp: answer,
+      });
+
+      currentRemoteRef.current = incomingOffer.from;
+      setCallPhase("connecting");
+      setCallStatus("Answer sent. Connecting...");
+      setIncomingOffer(null);
+    } catch (error) {
+      console.error("accept call failed", error);
+      cleanupCall();
+      setShowCallScreen(false);
+      setCallPhase("failed");
+      setCallStatus("Failed to answer");
+    }
+  }
+
+  async function rejectIncomingCall() {
+    if (incomingOffer) {
+      addRecent(incomingOffer.from, "missed");
+      await sendSignal("end-call", {
+        from: myNumber,
+        to: incomingOffer.from,
+      });
+    }
+
+    setIncomingOffer(null);
+    setIncomingFrom("");
+    setShowIncomingModal(false);
+    setCallPhase("idle");
+    setCallStatus("Call rejected");
+  }
+
+  async function endCall() {
+    const remote = currentRemoteRef.current;
+    cleanupCall();
+    setShowCallScreen(false);
+    setCallPhase("ended");
+    setCallStatus("Call ended");
+
+    if (remote) {
+      await sendSignal("end-call", {
+        from: myNumber,
+        to: remote,
+      });
+    }
+  }
+
+  function appendToTarget(value: string) {
+    const suffix = getSuffix(targetNumber);
+
+    if (/^\d$/.test(value)) {
+      if (suffix.length >= MAX_SUFFIX_DIGITS) return;
+      setTargetNumber(`${PHONE_PREFIX}${suffix}${value}`);
+      return;
+    }
+  }
+
+  function deleteTarget() {
+    const suffix = getSuffix(targetNumber);
+    if (!suffix.length) return;
+    setTargetNumber(`${PHONE_PREFIX}${suffix.slice(0, -1)}`);
+  }
+
+  function clearTarget() {
+    setTargetNumber(PHONE_PREFIX);
+  }
+
+  function saveContact() {
+    const cleanName = contactName.trim();
+    const cleanNumber = normalizeNumber(targetNumber);
+
+    if (!cleanName || !isValidTaurusNumber(cleanNumber)) {
+      alert("Add valid contact name and target number");
+      return;
+    }
+
+    const newContact: ContactItem = {
+      id: Date.now(),
+      name: cleanName,
+      number: cleanNumber,
+      avatar: buildAvatar(cleanName),
+      isFavorite: false,
+    };
+
+    setContacts((prev) => [newContact, ...prev]);
+    setContactName("");
+    setShowAddContactModal(false);
+  }
+
+  function deleteContact(contactId: number) {
     setContacts((prev) => prev.filter((item) => item.id !== contactId));
-    if (selectedChatId === contactId) {
-      setSelectedChatId(null);
-      setMessageView("list");
-    }
-  };
+  }
 
-  const toggleFavorite = (contactId: number) => {
+  function toggleFavorite(contactId: number) {
     setContacts((prev) =>
       prev.map((item) =>
         item.id === contactId ? { ...item, isFavorite: !item.isFavorite } : item
       )
     );
-  };
-
-  const createUnknownThreadFromNumber = () => {
-    const number = phone.trim();
-    if (!number || number === PHONE_PREFIX.trim()) {
-      alert("Enter number first.");
-      return;
-    }
-
-    let existing = contacts.find((c) => c.number === number);
-
-    if (!existing) {
-      existing = {
-        id: Date.now(),
-        name: number,
-        number,
-        avatar: "N",
-        isFavorite: false,
-      };
-      setContacts((prev) => [existing!, ...prev]);
-    }
-
-    setSelectedChatId(existing.id);
-    setMessageView("thread");
-  };
+  }
 
   const tabButton = (key: TabKey, label: string) => {
     const active = activeTab === key;
@@ -493,8 +646,8 @@ export default function WebCallPage() {
         favoriteContacts.map((contact) => (
           <button
             key={contact.id}
-            onClick={() => setPhone(contact.number)}
-            className="flex w-full items-center gap-4 rounded-3xl bg-white px-4 py-4 text-left shadow-sm transition active:scale-[0.99]"
+            onClick={() => setTargetNumber(contact.number)}
+            className="flex w-full items-center gap-4 rounded-3xl bg-white px-4 py-4 text-left shadow-sm"
           >
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#0a84ff] text-sm font-bold text-white">
               {contact.avatar}
@@ -535,16 +688,12 @@ export default function WebCallPage() {
               </div>
               <div className="truncate text-sm text-[#8e8e93]">{item.number}</div>
             </div>
-            <div className="text-right">
-              <div className="text-xs text-[#8e8e93]">{item.time}</div>
-              <button
-                type="button"
-                onClick={() => setPhone(item.number)}
-                className="mt-1 text-sm font-medium text-[#0a84ff]"
-              >
-                Dial
-              </button>
-            </div>
+            <button
+              onClick={() => setTargetNumber(item.number)}
+              className="rounded-full bg-[#0a84ff] px-3 py-2 text-xs font-semibold text-white"
+            >
+              Dial
+            </button>
           </div>
         ))
       )}
@@ -561,7 +710,7 @@ export default function WebCallPage() {
           className="w-full rounded-2xl border border-[#e5e5ea] bg-white px-4 py-3 text-sm text-[#111111] outline-none"
         />
         <button
-          onClick={() => openAddContactModal()}
+          onClick={() => setShowAddContactModal(true)}
           className="rounded-2xl bg-[#0a84ff] px-4 py-3 text-sm font-semibold text-white"
         >
           Add
@@ -575,10 +724,7 @@ export default function WebCallPage() {
           </div>
         ) : (
           filteredContacts.map((contact) => (
-            <div
-              key={contact.id}
-              className="rounded-3xl bg-white px-4 py-4 shadow-sm"
-            >
+            <div key={contact.id} className="rounded-3xl bg-white px-4 py-4 shadow-sm">
               <div className="flex items-center gap-4">
                 <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#0a84ff] text-sm font-bold text-white">
                   {contact.avatar}
@@ -590,31 +736,19 @@ export default function WebCallPage() {
                   <div className="truncate text-sm text-[#8e8e93]">{contact.number}</div>
                 </div>
                 <button
-                  onClick={() => openThread(contact.id)}
-                  className="rounded-full bg-[#0a84ff] px-3 py-2 text-xs font-semibold text-white"
+                  onClick={() => setTargetNumber(contact.number)}
+                  className="rounded-full bg-[#34c759] px-3 py-2 text-xs font-semibold text-white"
                 >
-                  SMS
+                  Call
                 </button>
               </div>
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
-                  onClick={() => setPhone(contact.number)}
-                  className="rounded-full bg-[#34c759] px-3 py-2 text-xs font-semibold text-white"
-                >
-                  Call
-                </button>
-                <button
                   onClick={() => toggleFavorite(contact.id)}
                   className="rounded-full bg-[#f2f2f7] px-3 py-2 text-xs font-semibold text-[#111111]"
                 >
                   {contact.isFavorite ? "Unfavorite" : "Favorite"}
-                </button>
-                <button
-                  onClick={() => openEditContactModal(contact)}
-                  className="rounded-full bg-[#f2f2f7] px-3 py-2 text-xs font-semibold text-[#111111]"
-                >
-                  Edit
                 </button>
                 <button
                   onClick={() => deleteContact(contact.id)}
@@ -633,27 +767,42 @@ export default function WebCallPage() {
   const renderKeypad = () => (
     <div>
       <div className="rounded-[30px] bg-white px-5 py-6 shadow-sm">
-        <div className="min-h-[64px] text-center">
+        <div className="text-center">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-[#8e8e93]">
+            My Number
+          </div>
+          <input
+            value={myNumber}
+            onChange={(e) => setMyNumber(normalizeNumber(e.target.value))}
+            className="w-full rounded-2xl border border-[#e5e5ea] bg-[#f7f7fa] px-4 py-3 text-center text-lg font-semibold text-[#111111] outline-none"
+            placeholder="+70 20 0000001"
+          />
+        </div>
+
+        <div className="mt-4 text-center">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-[#8e8e93]">
+            Target Number
+          </div>
           <div className="break-all text-[34px] font-semibold tracking-[0.04em] text-[#111111]">
-            {formatNumberForDisplay(phone)}
+            {targetNumber}
           </div>
         </div>
 
-        <div className="mt-2 text-center text-sm text-[#8e8e93]">{callStatus}</div>
+        <div className="mt-3 text-center text-sm text-[#8e8e93]">{callStatus}</div>
       </div>
 
       <div className="mt-4 flex justify-center gap-2">
         <button
-          onClick={() => openAddContactModal(phone)}
+          onClick={() => setShowAddContactModal(true)}
           className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-[#111111] shadow-sm"
         >
           Save Contact
         </button>
         <button
-          onClick={createUnknownThreadFromNumber}
+          onClick={clearTarget}
           className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-[#111111] shadow-sm"
         >
-          SMS
+          Clear All
         </button>
       </div>
 
@@ -664,7 +813,7 @@ export default function WebCallPage() {
               <button
                 key={item.key}
                 type="button"
-                onClick={() => appendDial(item.key)}
+                onClick={() => appendToTarget(item.key)}
                 className="flex h-[82px] w-[82px] flex-col items-center justify-center rounded-full bg-white text-[#111111] shadow-sm transition active:scale-95"
               >
                 <span className="text-[30px] font-medium leading-none">{item.key}</span>
@@ -680,7 +829,7 @@ export default function WebCallPage() {
       <div className="mt-6 flex items-center justify-center gap-4">
         <button
           type="button"
-          onClick={clearDial}
+          onClick={clearTarget}
           className="flex h-14 min-w-[82px] items-center justify-center rounded-full bg-white px-5 text-sm font-semibold text-[#111111] shadow-sm"
         >
           Clear
@@ -689,7 +838,7 @@ export default function WebCallPage() {
         <button
           type="button"
           onClick={placeCall}
-          disabled={cleanedNumber.length < 8 || isCalling}
+          disabled={!isValidTaurusNumber(myNumber) || !isValidTaurusNumber(targetNumber) || callPhase === "calling" || callPhase === "connecting" || callPhase === "in-call"}
           className="flex h-20 w-20 items-center justify-center rounded-full bg-[#34c759] text-3xl text-white shadow-[0_12px_30px_rgba(52,199,89,0.35)] transition active:scale-95 disabled:opacity-60"
         >
           📞
@@ -697,7 +846,7 @@ export default function WebCallPage() {
 
         <button
           type="button"
-          onClick={deleteDial}
+          onClick={deleteTarget}
           className="flex h-14 min-w-[82px] items-center justify-center rounded-full bg-white px-5 text-sm font-semibold text-[#111111] shadow-sm"
         >
           Delete
@@ -723,262 +872,22 @@ export default function WebCallPage() {
       <div className="rounded-3xl bg-white px-4 py-4 shadow-sm">
         <div className="text-base font-semibold text-[#111111]">Voicemail</div>
         <div className="mt-2 text-sm text-[#8e8e93]">
-          No new voicemail messages.
+          No voicemail yet.
         </div>
       </div>
       <div className="rounded-3xl bg-white px-4 py-4 shadow-sm">
         <div className="text-sm text-[#8e8e93]">
-          Voicemail UI ready for future backend integration.
+          Web call stage complete. Voicemail can be added later.
         </div>
       </div>
     </div>
   );
 
-  const renderMessagesPanel = () => {
-    if (messageView === "thread" && selectedContact) {
-      return (
-        <div className="flex h-full flex-col">
-          <div className="flex items-center gap-3 border-b border-white/70 px-4 py-4">
-            <button
-              onClick={() => setMessageView("list")}
-              className="text-sm font-semibold text-[#0a84ff]"
-            >
-              Back
-            </button>
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#0a84ff] text-sm font-bold text-white">
-              {selectedContact.avatar}
-            </div>
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-[#111111]">
-                {selectedContact.name}
-              </div>
-              <div className="truncate text-xs text-[#8e8e93]">{selectedContact.number}</div>
-            </div>
-            <button
-              onClick={() => setPhone(selectedContact.number)}
-              className="ml-auto rounded-full bg-[#34c759] px-3 py-2 text-xs font-semibold text-white"
-            >
-              Call
-            </button>
-          </div>
-
-          <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
-            {selectedMessages.length === 0 ? (
-              <div className="rounded-3xl bg-white px-4 py-6 text-center text-sm text-[#8e8e93]">
-                No messages yet.
-              </div>
-            ) : (
-              selectedMessages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex ${msg.sender === "me" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[80%] rounded-[22px] px-4 py-3 text-sm leading-6 ${
-                      msg.sender === "me"
-                        ? "bg-[#0a84ff] text-white"
-                        : "bg-white text-[#111111]"
-                    }`}
-                  >
-                    {msg.image && (
-                      <img
-                        src={msg.image}
-                        alt="sent"
-                        className="mb-2 max-h-44 w-full rounded-2xl object-cover"
-                      />
-                    )}
-                    {msg.text && <div>{msg.text}</div>}
-                    <div
-                      className={`mt-1 text-[10px] ${
-                        msg.sender === "me" ? "text-white/75" : "text-[#8e8e93]"
-                      }`}
-                    >
-                      {msg.time}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="border-t border-white/70 bg-[#f2f2f7] px-3 py-3">
-            <div className="rounded-[24px] bg-white p-3 shadow-sm">
-              {selectedImage && (
-                <div className="mb-3">
-                  <img
-                    src={selectedImage}
-                    alt="preview"
-                    className="max-h-44 rounded-2xl object-cover"
-                  />
-                </div>
-              )}
-
-              <textarea
-                value={messageText}
-                onChange={(e) => setMessageText(e.target.value)}
-                rows={3}
-                placeholder="iMessage"
-                className="w-full resize-none border-none bg-transparent text-sm text-[#111111] outline-none placeholder:text-[#8e8e93]"
-              />
-
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => setShowEmoji((prev) => !prev)}
-                  className="rounded-full bg-[#f2f2f7] px-3 py-2 text-xs font-semibold text-[#111111]"
-                >
-                  Emoji
-                </button>
-
-                <button
-                  onClick={() => setShowMyanmarKeyboard((prev) => !prev)}
-                  className="rounded-full bg-[#f2f2f7] px-3 py-2 text-xs font-semibold text-[#111111]"
-                >
-                  Myanmar
-                </button>
-
-                <button
-                  onClick={triggerImagePicker}
-                  className="rounded-full bg-[#f2f2f7] px-3 py-2 text-xs font-semibold text-[#111111]"
-                >
-                  Photo
-                </button>
-
-                <button
-                  onClick={deleteMessageChar}
-                  className="rounded-full bg-[#f2f2f7] px-3 py-2 text-xs font-semibold text-[#111111]"
-                >
-                  Delete
-                </button>
-
-                <button
-                  onClick={() => {
-                    setMessageText("");
-                    setSelectedImage(null);
-                  }}
-                  className="rounded-full bg-[#f2f2f7] px-3 py-2 text-xs font-semibold text-[#111111]"
-                >
-                  Clear
-                </button>
-
-                <button
-                  onClick={sendMessage}
-                  className="ml-auto rounded-full bg-[#34c759] px-4 py-2 text-xs font-semibold text-white"
-                >
-                  Send
-                </button>
-              </div>
-
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                onChange={onSelectImage}
-                className="hidden"
-              />
-
-              {showEmoji && (
-                <div className="mt-3 flex flex-wrap gap-2 rounded-2xl bg-[#f7f7fa] p-3">
-                  {emojis.map((emoji) => (
-                    <button
-                      key={emoji}
-                      onClick={() => appendMessageText(emoji)}
-                      className="rounded-xl bg-white px-3 py-2 text-lg shadow-sm"
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {showMyanmarKeyboard && (
-                <div className="mt-3 rounded-2xl bg-[#f7f7fa] p-3">
-                  <div className="space-y-2">
-                    {mmKeyboardRows.map((row, idx) => (
-                      <div key={idx} className="flex flex-wrap gap-2">
-                        {row.map((char) => (
-                          <button
-                            key={`${idx}-${char}`}
-                            onClick={() => appendMessageText(char)}
-                            className="rounded-xl bg-white px-3 py-2 text-sm font-medium text-[#111111] shadow-sm"
-                          >
-                            {char}
-                          </button>
-                        ))}
-                      </div>
-                    ))}
-                    <div className="grid grid-cols-3 gap-2 pt-1">
-                      <button
-                        onClick={() => appendMessageText(" ")}
-                        className="rounded-xl bg-white px-3 py-2 text-sm font-medium text-[#111111] shadow-sm"
-                      >
-                        Space
-                      </button>
-                      <button
-                        onClick={() => appendMessageText("္")}
-                        className="rounded-xl bg-white px-3 py-2 text-sm font-medium text-[#111111] shadow-sm"
-                      >
-                        Virama
-                      </button>
-                      <button
-                        onClick={deleteMessageChar}
-                        className="rounded-xl bg-white px-3 py-2 text-sm font-medium text-[#111111] shadow-sm"
-                      >
-                        Backspace
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="h-full overflow-y-auto px-4 py-4">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div className="text-lg font-bold text-[#111111]">Messages</div>
-          <button
-            onClick={createUnknownThreadFromNumber}
-            className="rounded-full bg-[#0a84ff] px-3 py-2 text-xs font-semibold text-white"
-          >
-            New SMS
-          </button>
-        </div>
-
-        <div className="space-y-3">
-          {messageThreads.length === 0 ? (
-            <div className="rounded-3xl bg-white px-4 py-6 text-center text-sm text-[#8e8e93] shadow-sm">
-              No message threads yet.
-            </div>
-          ) : (
-            messageThreads.map((thread) => (
-              <button
-                key={thread.contact.id}
-                onClick={() => openThread(thread.contact.id)}
-                className="flex w-full items-center gap-3 rounded-3xl bg-white px-4 py-4 text-left shadow-sm"
-              >
-                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#0a84ff] text-sm font-bold text-white">
-                  {thread.contact.avatar}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-base font-semibold text-[#111111]">
-                    {thread.contact.name}
-                  </div>
-                  <div className="truncate text-sm text-[#8e8e93]">{thread.preview}</div>
-                </div>
-                <div className="text-xs text-[#8e8e93]">{thread.time}</div>
-              </button>
-            ))
-          )}
-        </div>
-      </div>
-    );
-  };
-
   return (
-    <main className={`min-h-screen bg-[#dfe3e8] px-3 py-4 ${fontClass}`}>
+    <main className="min-h-screen bg-[#dfe3e8] px-3 py-4">
+      <audio ref={localAudioRef} autoPlay muted className="hidden" />
+      <audio ref={remoteAudioRef} autoPlay className="hidden" />
+
       <div className="mx-auto max-w-[460px]">
         <div className="overflow-hidden rounded-[42px] border border-black/10 bg-[#f2f2f7] shadow-[0_30px_80px_rgba(0,0,0,0.22)]">
           <div className="flex justify-center pt-3">
@@ -991,22 +900,16 @@ export default function WebCallPage() {
               <div className="text-xs text-[#111111]">Taurus Signal ▮▮▮</div>
             </div>
 
-            <div className="mt-3 flex items-center justify-between gap-2 px-2">
+            <div className="mt-3 px-2">
               <div className="text-[28px] font-bold tracking-[-0.03em] text-[#111111]">
-                Phone
+                Taurus Call
               </div>
-
-              <button
-                onClick={() =>
-                  setFontMode((prev) => (prev === "english" ? "myanmar" : "english"))
-                }
-                className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-[#111111] shadow-sm"
-              >
-                {fontMode === "english" ? "MM Font" : "EN Font"}
-              </button>
+              <div className="mt-1 text-xs text-[#8e8e93]">
+                WebRTC + Supabase Realtime + TURN Ready
+              </div>
             </div>
 
-            <div className="mt-4 min-h-[430px] rounded-[34px] bg-[#f2f2f7]">
+            <div className="mt-4 min-h-[520px] rounded-[34px] bg-[#f2f2f7]">
               <div className="px-1">
                 {activeTab === "favorites" && renderFavorites()}
                 {activeTab === "recents" && renderRecents()}
@@ -1025,16 +928,6 @@ export default function WebCallPage() {
                 {tabButton("voicemail", "Voicemail")}
               </div>
             </div>
-
-            <div className="mt-4 overflow-hidden rounded-[28px] border border-white/50 bg-[#e9edf2] shadow-[0_24px_60px_rgba(0,0,0,0.12)]">
-              <div className="border-b border-white/50 bg-white/50 px-4 py-4">
-                <div className="text-xl font-bold text-[#111111]">SMS / Messages</div>
-                <div className="mt-1 text-xs text-[#8e8e93]">
-                  Mobile browser messaging UI
-                </div>
-              </div>
-              <div className="min-h-[360px]">{renderMessagesPanel()}</div>
-            </div>
           </div>
         </div>
       </div>
@@ -1042,40 +935,26 @@ export default function WebCallPage() {
       {showAddContactModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
           <div className="w-full max-w-sm rounded-[28px] bg-white p-5 shadow-2xl">
-            <div className="text-lg font-bold text-[#111111]">
-              {editingContactId ? "Edit Contact" : "Add Contact"}
-            </div>
+            <div className="text-lg font-bold text-[#111111]">Add Contact</div>
 
             <div className="mt-4 space-y-3">
               <input
-                value={contactForm.name}
-                onChange={(e) =>
-                  setContactForm((prev) => ({ ...prev, name: e.target.value }))
-                }
+                value={contactName}
+                onChange={(e) => setContactName(e.target.value)}
                 placeholder="Name"
                 className="w-full rounded-2xl border border-[#e5e5ea] px-4 py-3 text-sm text-[#111111] outline-none"
               />
               <input
-                value={contactForm.number}
-                onChange={(e) =>
-                  setContactForm((prev) => ({ ...prev, number: e.target.value }))
-                }
-                placeholder="Number"
-                className="w-full rounded-2xl border border-[#e5e5ea] px-4 py-3 text-sm text-[#111111] outline-none"
-              />
-              <input
-                value={contactForm.avatar}
-                onChange={(e) =>
-                  setContactForm((prev) => ({ ...prev, avatar: e.target.value }))
-                }
-                placeholder="Avatar letter (optional)"
+                value={targetNumber}
+                onChange={(e) => setTargetNumber(normalizeNumber(e.target.value))}
+                placeholder="+70 20 0000001"
                 className="w-full rounded-2xl border border-[#e5e5ea] px-4 py-3 text-sm text-[#111111] outline-none"
               />
             </div>
 
             <div className="mt-5 flex gap-3">
               <button
-                onClick={resetContactModal}
+                onClick={() => setShowAddContactModal(false)}
                 className="w-full rounded-2xl bg-[#f2f2f7] px-4 py-3 text-sm font-semibold text-[#111111]"
               >
                 Cancel
@@ -1091,6 +970,31 @@ export default function WebCallPage() {
         </div>
       )}
 
+      {showIncomingModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 px-4">
+          <div className="w-full max-w-sm rounded-[28px] bg-white p-6 text-center shadow-2xl">
+            <div className="text-sm text-[#8e8e93]">Incoming Call</div>
+            <div className="mt-2 text-2xl font-bold text-[#111111]">{incomingFrom}</div>
+            <div className="mt-1 text-sm text-[#8e8e93]">to {myNumber}</div>
+
+            <div className="mt-6 flex justify-center gap-4">
+              <button
+                onClick={rejectIncomingCall}
+                className="flex h-16 w-16 items-center justify-center rounded-full bg-[#ff3b30] text-2xl text-white"
+              >
+                ✕
+              </button>
+              <button
+                onClick={acceptIncomingCall}
+                className="flex h-16 w-16 items-center justify-center rounded-full bg-[#34c759] text-2xl text-white"
+              >
+                📞
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showCallScreen && (
         <div className="fixed inset-0 z-[60] bg-[radial-gradient(circle_at_top,rgba(65,79,255,0.32),transparent_28%),linear-gradient(180deg,#0b1228_0%,#111827_100%)] px-6 py-8 text-white">
           <div className="mx-auto flex min-h-full max-w-[460px] flex-col">
@@ -1099,13 +1003,23 @@ export default function WebCallPage() {
             </div>
 
             <div className="mt-10 text-center">
-              <div className="text-sm text-white/60">Calling...</div>
-              <div className="mt-3 text-[34px] font-bold tracking-[-0.03em]">
-                {activeCallName}
+              <div className="text-sm text-white/60">
+                {callPhase === "requesting-media" && "Requesting microphone..."}
+                {callPhase === "calling" && "Calling..."}
+                {callPhase === "incoming" && "Incoming..."}
+                {callPhase === "connecting" && "Connecting..."}
+                {callPhase === "in-call" && "In Call"}
+                {callPhase === "failed" && "Failed"}
+                {callPhase === "ended" && "Ended"}
+                {callPhase === "idle" && "Idle"}
               </div>
-              <div className="mt-2 text-base text-white/75">{formatNumberForDisplay(phone)}</div>
+
+              <div className="mt-3 text-[34px] font-bold tracking-[-0.03em]">
+                {activeCallName || "Unknown"}
+              </div>
+              <div className="mt-2 text-base text-white/75">{currentRemoteRef.current || targetNumber}</div>
               <div className="mt-3 text-sm text-[#9cc3ff]">
-                {callSeconds === 0 ? "Connecting..." : formattedDuration}
+                {callPhase === "in-call" ? formattedDuration : callStatus}
               </div>
             </div>
 
