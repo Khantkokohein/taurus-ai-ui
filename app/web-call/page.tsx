@@ -36,11 +36,23 @@ type IncomingOffer = {
   sdp: RTCSessionDescriptionInit;
 };
 
-type OwnershipLite = {
+type OwnershipBoundRow = {
   id: string;
-  number: string | null;
+  number_id: string | null;
   device_id: string | null;
   active: boolean | null;
+  numbers?:
+    | {
+        id: string;
+        number: string | null;
+        suffix_7: string | null;
+      }
+    | {
+        id: string;
+        number: string | null;
+        suffix_7: string | null;
+      }[]
+    | null;
 };
 
 const PHONE_PREFIX = "+70 20 ";
@@ -146,6 +158,7 @@ export default function CallPage() {
 
   const [contactName, setContactName] = useState("");
   const [showAddContactModal, setShowAddContactModal] = useState(false);
+  const [activeRemoteNumber, setActiveRemoteNumber] = useState("");
 
   const localAudioRef = useRef<HTMLAudioElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -157,12 +170,21 @@ export default function CallPage() {
   const timerRef = useRef<number | null>(null);
   const callTimeoutRef = useRef<number | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
-  const currentRemoteRef = useRef<string>("");
   const callConnectedRef = useRef(false);
+  const myNumberRef = useRef(PHONE_PREFIX);
+  const callPhaseRef = useRef<CallPhase>("idle");
 
   const ringtoneContextRef = useRef<AudioContext | null>(null);
   const ringtoneIntervalRef = useRef<number | null>(null);
   const ringtoneTimeoutsRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    myNumberRef.current = myNumber;
+  }, [myNumber]);
+
+  useEffect(() => {
+    callPhaseRef.current = callPhase;
+  }, [callPhase]);
 
   useEffect(() => {
     const storedContacts = safeJsonParse<ContactItem[]>(
@@ -198,18 +220,21 @@ export default function CallPage() {
     const channel = supabase.channel(SIGNAL_CHANNEL);
 
     channel
-      .on("broadcast", { event: "offer" }, ({ payload }) => {
-        if (!payload?.to || payload.to !== myNumber) return;
-        if (!isValidTaurusNumber(myNumber)) return;
+      .on("broadcast", { event: "offer" }, async ({ payload }) => {
+        const mine = myNumberRef.current;
+        if (!payload?.to || payload.to !== mine) return;
+        if (!isValidTaurusNumber(mine)) return;
 
-        if (
-          callPhase === "in-call" ||
-          callPhase === "connecting" ||
-          callPhase === "calling" ||
-          callPhase === "requesting-media"
-        ) {
-          void sendSignal("end-call", {
-            from: myNumber,
+        const busy =
+          callPhaseRef.current === "in-call" ||
+          callPhaseRef.current === "connecting" ||
+          callPhaseRef.current === "calling" ||
+          callPhaseRef.current === "requesting-media" ||
+          showIncomingModal;
+
+        if (busy) {
+          await sendSignal("end-call", {
+            from: mine,
             to: payload.from,
           });
           return;
@@ -221,17 +246,19 @@ export default function CallPage() {
           sdp: payload.sdp,
         };
 
-        currentRemoteRef.current = payload.from;
         setIncomingOffer(offer);
         setIncomingFrom(payload.from);
+        setActiveRemoteNumber(payload.from);
         setCallPhase("incoming");
         setCallStatus(`Incoming call from ${payload.from}`);
         setShowIncomingModal(true);
         startRingtone("incoming");
       })
       .on("broadcast", { event: "answer" }, async ({ payload }) => {
-        if (!payload?.to || payload.to !== myNumber) return;
+        const mine = myNumberRef.current;
+        if (!payload?.to || payload.to !== mine) return;
         if (!peerRef.current) return;
+        if (peerRef.current.signalingState === "closed") return;
 
         try {
           await peerRef.current.setRemoteDescription(
@@ -239,9 +266,13 @@ export default function CallPage() {
           );
 
           for (const c of pendingCandidatesRef.current) {
-            await peerRef.current.addIceCandidate(new RTCIceCandidate(c));
-          }
-          pendingCandidatesRef.current = [];
+  try {
+    await peerRef.current.addIceCandidate(new RTCIceCandidate(c));
+  } catch (error) {
+    console.error("pending ice add failed", error);
+  }
+}
+pendingCandidatesRef.current = [];
 
           stopRingtone();
           setCallPhase("connecting");
@@ -254,12 +285,13 @@ export default function CallPage() {
         }
       })
       .on("broadcast", { event: "ice-candidate" }, async ({ payload }) => {
-        if (!payload?.to || payload.to !== myNumber) return;
+        const mine = myNumberRef.current;
+        if (!payload?.to || payload.to !== mine) return;
         if (!payload?.candidate) return;
+        if (!peerRef.current) return;
+        if (peerRef.current.signalingState === "closed") return;
 
         try {
-          if (!peerRef.current) return;
-
           if (peerRef.current.remoteDescription) {
             await peerRef.current.addIceCandidate(
               new RTCIceCandidate(payload.candidate)
@@ -272,12 +304,13 @@ export default function CallPage() {
         }
       })
       .on("broadcast", { event: "end-call" }, ({ payload }) => {
-        if (!payload?.to || payload.to !== myNumber) return;
+        const mine = myNumberRef.current;
+        if (!payload?.to || payload.to !== mine) return;
 
         stopRingtone();
 
-        if (!callConnectedRef.current && currentRemoteRef.current) {
-          addRecent(currentRemoteRef.current, "missed");
+        if (!callConnectedRef.current && activeRemoteNumber) {
+          addRecent(activeRemoteNumber, "missed");
         }
 
         cleanupCall();
@@ -287,6 +320,7 @@ export default function CallPage() {
         setShowCallScreen(false);
         setCallPhase("ended");
         setCallStatus("Remote user ended the call");
+        setActiveRemoteNumber("");
       })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
@@ -304,7 +338,7 @@ export default function CallPage() {
       stopRingtone();
       cleanupCall();
     };
-  }, [myNumber, callPhase]);
+  }, [activeRemoteNumber, showIncomingModal]);
 
   useEffect(() => {
     if (!showCallScreen || callPhase !== "in-call") return;
@@ -314,7 +348,9 @@ export default function CallPage() {
     }, 1000);
 
     return () => {
-      if (timerRef.current) window.clearInterval(timerRef.current);
+      if (timerRef.current) {
+        window.clearInterval(timerRef.current);
+      }
       timerRef.current = null;
     };
   }, [showCallScreen, callPhase]);
@@ -338,7 +374,19 @@ export default function CallPage() {
 
     const { data, error } = await supabase
       .from("ownership")
-      .select("id, number, device_id, active")
+      .select(
+        `
+        id,
+        number_id,
+        device_id,
+        active,
+        numbers:number_id (
+          id,
+          number,
+          suffix_7
+        )
+      `
+      )
       .eq("device_id", deviceId)
       .eq("active", true)
       .limit(1);
@@ -349,12 +397,19 @@ export default function CallPage() {
       return;
     }
 
-    const owned = (data || []) as OwnershipLite[];
+    const owned = (data || []) as OwnershipBoundRow[];
 
-    if (owned.length > 0 && owned[0].number) {
-      const suffix = String(owned[0].number).replace(/\D/g, "").slice(-7);
-      setOwnedSuffix(suffix);
-      setMyNumber(`${PHONE_PREFIX}${suffix}`);
+    const linkedNumber = owned.length
+      ? Array.isArray(owned[0].numbers)
+        ? owned[0].numbers[0]
+        : owned[0].numbers
+      : null;
+
+    const suffix = linkedNumber?.number || linkedNumber?.suffix_7 || "";
+
+    if (suffix) {
+      setOwnedSuffix(String(suffix).replace(/\D/g, "").slice(-7));
+      setMyNumber(`${PHONE_PREFIX}${String(suffix).replace(/\D/g, "").slice(-7)}`);
       setCallStatus("Owned number bound successfully");
     } else {
       setOwnedSuffix("");
@@ -401,7 +456,11 @@ export default function CallPage() {
       peerRef.current.onicecandidate = null;
       peerRef.current.ontrack = null;
       peerRef.current.onconnectionstatechange = null;
-      peerRef.current.close();
+      try {
+        if (peerRef.current.signalingState !== "closed") {
+          peerRef.current.close();
+        }
+      } catch {}
       peerRef.current = null;
     }
 
@@ -460,7 +519,9 @@ export default function CallPage() {
 
       oscillator.start();
       window.setTimeout(() => {
-        oscillator.stop();
+        try {
+          oscillator.stop();
+        } catch {}
         oscillator.disconnect();
         gain.disconnect();
       }, durationMs);
@@ -491,18 +552,19 @@ export default function CallPage() {
 
     const playPattern = () => {
       if (kind === "incoming") {
-        scheduleBeep(ctx, 880, 180, 0, 0.05);
-        scheduleBeep(ctx, 660, 180, 280, 0.05);
+        scheduleBeep(ctx, 880, 180, 0, 0.055);
+        scheduleBeep(ctx, 660, 180, 260, 0.055);
+        scheduleBeep(ctx, 880, 220, 620, 0.05);
       } else {
         scheduleBeep(ctx, 520, 220, 0, 0.045);
-        scheduleBeep(ctx, 520, 220, 350, 0.045);
+        scheduleBeep(ctx, 520, 220, 340, 0.045);
       }
     };
 
     playPattern();
     ringtoneIntervalRef.current = window.setInterval(
       playPattern,
-      kind === "incoming" ? 1800 : 1600
+      kind === "incoming" ? 1800 : 1500
     );
   }
 
@@ -524,16 +586,27 @@ export default function CallPage() {
   }
 
   async function buildPeerConnection(remoteNumber: string) {
+    cleanupCall();
+
     const peer = new RTCPeerConnection(RTC_CONFIG);
     const remoteStream = new MediaStream();
 
-    currentRemoteRef.current = remoteNumber;
+    setActiveRemoteNumber(remoteNumber);
     peerRef.current = peer;
     remoteStreamRef.current = remoteStream;
 
     peer.ontrack = (event) => {
-      event.streams[0]?.getTracks().forEach((track) => {
-        remoteStream.addTrack(track);
+      const incomingStream = event.streams?.[0];
+      if (!incomingStream) return;
+
+      incomingStream.getTracks().forEach((track) => {
+        const exists = remoteStream
+          .getTracks()
+          .some((existingTrack) => existingTrack.id === track.id);
+
+        if (!exists) {
+          remoteStream.addTrack(track);
+        }
       });
 
       if (remoteAudioRef.current) {
@@ -546,7 +619,7 @@ export default function CallPage() {
       if (!event.candidate) return;
 
       await sendSignal("ice-candidate", {
-        from: myNumber,
+        from: myNumberRef.current,
         to: remoteNumber,
         candidate: event.candidate.toJSON(),
       });
@@ -579,15 +652,21 @@ export default function CallPage() {
 
         setCallPhase("failed");
         setCallStatus("Call failed");
+      } else if (state === "closed") {
+        stopRingtone();
       }
     };
 
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     localStreamRef.current = stream;
 
-    stream.getTracks().forEach((track) => {
-      peer.addTrack(track, stream);
-    });
+  stream.getTracks().forEach((track) => {
+  try {
+    peer.addTrack(track, stream);
+  } catch (error) {
+    console.error("addTrack failed", error);
+  }
+});
 
     if (localAudioRef.current) {
       localAudioRef.current.srcObject = stream;
@@ -601,10 +680,10 @@ export default function CallPage() {
     const suffix = getSuffix(numberWithPrefix);
 
     const { data, error } = await supabase
-      .from("ownership")
-      .select("id, number, active")
+      .from("numbers")
+      .select("id, number, status")
       .eq("number", suffix)
-      .eq("active", true)
+      .eq("status", "sold")
       .limit(1);
 
     if (error) {
@@ -655,12 +734,12 @@ export default function CallPage() {
       addRecent(targetNumber, "outgoing");
 
       await sendSignal("offer", {
-        from: myNumber,
+        from: myNumberRef.current,
         to: targetNumber,
         sdp: offer,
       });
 
-      currentRemoteRef.current = targetNumber;
+      setActiveRemoteNumber(targetNumber);
       setCallStatus("Calling...");
       startRingtone("outgoing");
 
@@ -674,9 +753,11 @@ export default function CallPage() {
           addRecent(targetNumber, "missed");
 
           await sendSignal("end-call", {
-            from: myNumber,
+            from: myNumberRef.current,
             to: targetNumber,
           });
+
+          setActiveRemoteNumber("");
         }
       }, 20000);
     } catch (error) {
@@ -688,6 +769,7 @@ export default function CallPage() {
       setCallStatus(
         error instanceof Error ? error.message : "Failed to start call"
       );
+      setActiveRemoteNumber("");
     }
   }
 
@@ -708,14 +790,22 @@ export default function CallPage() {
 
       const peer = await buildPeerConnection(incomingOffer.from);
 
+      if (peer.signalingState === "closed") {
+        throw new Error("Peer connection already closed");
+      }
+
       await peer.setRemoteDescription(
         new RTCSessionDescription(incomingOffer.sdp)
       );
 
-      for (const c of pendingCandidatesRef.current) {
-        await peer.addIceCandidate(new RTCIceCandidate(c));
-      }
-      pendingCandidatesRef.current = [];
+     for (const c of pendingCandidatesRef.current) {
+  try {
+    await peer.addIceCandidate(new RTCIceCandidate(c));
+  } catch (error) {
+    console.error("pending ice add failed", error);
+  }
+}
+pendingCandidatesRef.current = [];
 
       const answer = await peer.createAnswer();
       await peer.setLocalDescription(answer);
@@ -723,12 +813,12 @@ export default function CallPage() {
       addRecent(incomingOffer.from, "incoming");
 
       await sendSignal("answer", {
-        from: myNumber,
+        from: myNumberRef.current,
         to: incomingOffer.from,
         sdp: answer,
       });
 
-      currentRemoteRef.current = incomingOffer.from;
+      setActiveRemoteNumber(incomingOffer.from);
       setCallPhase("connecting");
       setCallStatus("Answer sent. Connecting...");
       setIncomingOffer(null);
@@ -739,7 +829,10 @@ export default function CallPage() {
       cleanupCall();
       setShowCallScreen(false);
       setCallPhase("failed");
-      setCallStatus("Failed to answer");
+      setCallStatus(
+        error instanceof Error ? error.message : "Failed to answer"
+      );
+      setActiveRemoteNumber("");
     }
   }
 
@@ -754,7 +847,7 @@ export default function CallPage() {
     if (incomingOffer) {
       addRecent(incomingOffer.from, "missed");
       await sendSignal("end-call", {
-        from: myNumber,
+        from: myNumberRef.current,
         to: incomingOffer.from,
       });
     }
@@ -764,6 +857,7 @@ export default function CallPage() {
     setShowIncomingModal(false);
     setCallPhase("idle");
     setCallStatus("Call rejected");
+    setActiveRemoteNumber("");
   }
 
   async function endCall() {
@@ -774,7 +868,7 @@ export default function CallPage() {
       callTimeoutRef.current = null;
     }
 
-    const remote = currentRemoteRef.current;
+    const remote = activeRemoteNumber;
 
     cleanupCall();
     setShowCallScreen(false);
@@ -783,10 +877,11 @@ export default function CallPage() {
     setIncomingFrom("");
     setCallPhase("ended");
     setCallStatus("Call ended");
+    setActiveRemoteNumber("");
 
     if (remote) {
       await sendSignal("end-call", {
-        from: myNumber,
+        from: myNumberRef.current,
         to: remote,
       });
     }
@@ -798,7 +893,6 @@ export default function CallPage() {
     if (/^\d$/.test(value)) {
       if (suffix.length >= MAX_SUFFIX_DIGITS) return;
       setTargetNumber(`${PHONE_PREFIX}${suffix}${value}`);
-      return;
     }
   }
 
@@ -861,9 +955,9 @@ export default function CallPage() {
   );
 
   const activeCallName = useMemo(() => {
-    const found = contacts.find((c) => c.number === currentRemoteRef.current);
-    return found?.name || currentRemoteRef.current || "Unknown";
-  }, [contacts, currentRemoteRef.current]);
+    const found = contacts.find((c) => c.number === activeRemoteNumber);
+    return found?.name || activeRemoteNumber || "Unknown";
+  }, [contacts, activeRemoteNumber]);
 
   const formattedDuration = useMemo(() => {
     const mins = Math.floor(callSeconds / 60)
@@ -1290,7 +1384,7 @@ export default function CallPage() {
                 {activeCallName || "Unknown"}
               </div>
               <div className="mt-2 text-base text-white/75">
-                {currentRemoteRef.current || targetNumber}
+                {activeRemoteNumber || targetNumber}
               </div>
               <div className="mt-3 text-sm text-[#9cc3ff]">
                 {callPhase === "in-call" ? formattedDuration : callStatus}
