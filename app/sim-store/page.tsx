@@ -9,6 +9,15 @@ type SimItem = {
   status: "available" | "sold";
   type?: "normal" | "vip" | "premium";
   highlight?: boolean;
+  is_giveaway?: boolean;
+  price?: number | null;
+  is_on_sale?: boolean;
+  sale_price?: number | null;
+};
+
+type OwnedSimItem = {
+  id: string;
+  number: string;
 };
 
 type FormState = {
@@ -18,6 +27,25 @@ type FormState = {
   address: string;
   father_name: string;
   job: string;
+};
+
+type OwnershipRow = {
+  id: string;
+  device_id: string | null;
+  active: boolean | null;
+  number_id: string | null;
+  numbers?:
+    | {
+        id: string;
+        number: string | null;
+        suffix_7: string | null;
+      }
+    | {
+        id: string;
+        number: string | null;
+        suffix_7: string | null;
+      }[]
+    | null;
 };
 
 const INITIAL_FORM: FormState = {
@@ -31,6 +59,7 @@ const INITIAL_FORM: FormState = {
 
 export default function SimStorePage() {
   const [numbers, setNumbers] = useState<SimItem[]>([]);
+  const [ownedNumbers, setOwnedNumbers] = useState<OwnedSimItem[]>([]);
   const [selected, setSelected] = useState<SimItem | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -48,9 +77,13 @@ export default function SimStorePage() {
   const [nrcBackPreview, setNrcBackPreview] = useState("");
 
   useEffect(() => {
-    initDevice();
-    loadNumbers();
+    void boot();
   }, []);
+
+  async function boot() {
+    const id = await initDevice();
+    await Promise.all([loadNumbers(), loadOwnedNumbers(id)]);
+  }
 
   async function initDevice() {
     let id = localStorage.getItem("device_id");
@@ -61,6 +94,7 @@ export default function SimStorePage() {
     }
 
     setDeviceId(id);
+    return id;
   }
 
   async function loadNumbers() {
@@ -76,6 +110,50 @@ export default function SimStorePage() {
     }
 
     setNumbers((data || []) as SimItem[]);
+  }
+
+  async function loadOwnedNumbers(currentDeviceId?: string) {
+    const activeDeviceId = currentDeviceId || deviceId;
+    if (!activeDeviceId) return;
+
+    const { data, error } = await supabase
+      .from("ownership")
+      .select(
+        `
+        id,
+        device_id,
+        active,
+        number_id,
+        numbers:number_id (
+          id,
+          number,
+          suffix_7
+        )
+      `
+      )
+      .eq("device_id", activeDeviceId)
+      .eq("active", true)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Load owned numbers error:", error.message);
+      return;
+    }
+
+    const mapped: OwnedSimItem[] = ((data || []) as unknown as OwnershipRow[])
+      .map((item) => {
+        const linkedNumber = Array.isArray(item.numbers)
+          ? item.numbers[0]
+          : item.numbers;
+
+        return {
+          id: item.id,
+          number: linkedNumber?.number || linkedNumber?.suffix_7 || "",
+        };
+      })
+      .filter((item) => item.number);
+
+    setOwnedNumbers(mapped);
   }
 
   function resetFormState() {
@@ -169,11 +247,6 @@ export default function SimStorePage() {
     [numbers]
   );
 
-  const ownedNumbers = useMemo(
-    () => numbers.filter((n) => n.status === "sold"),
-    [numbers]
-  );
-
   function validateStep(currentStep: number) {
     if (currentStep === 1) {
       if (!selected) {
@@ -254,6 +327,7 @@ export default function SimStorePage() {
         .from("ownership")
         .select("id, number, device_id")
         .eq("device_id", deviceId)
+        .eq("active", true)
         .limit(1);
 
       if (ownershipCheckError) {
@@ -321,7 +395,7 @@ export default function SimStorePage() {
       }
 
       const { error: ownershipError } = await supabase.from("ownership").insert({
-         number_id: selected.id,
+        number_id: selected.id,
         number: selected.number,
         owner_name: form.full_name.trim(),
         owner_nrc: form.nrc.trim(),
@@ -345,7 +419,7 @@ export default function SimStorePage() {
 
       alert("✅ SIM Ownership Activated Successfully");
       resetFormState();
-      await loadNumbers();
+      await Promise.all([loadNumbers(), loadOwnedNumbers()]);
     } catch (error) {
       console.error(error);
       alert(
@@ -378,10 +452,20 @@ export default function SimStorePage() {
   }
 
   function getBadge(item: SimItem) {
+    if (item.is_giveaway) return "GIVEAWAY";
     if (item.type === "vip") return "VIP NUMBER";
     if (item.type === "premium") return "PREMIUM";
     if (item.highlight) return "FEATURED";
     return "STANDARD";
+  }
+
+  function getPriceLabel(item: SimItem) {
+    if (item.is_giveaway) return "FREE";
+    if (item.is_on_sale && item.sale_price) {
+      return `${Number(item.sale_price).toLocaleString()} TAT`;
+    }
+    if (item.price) return `${Number(item.price).toLocaleString()} TAT`;
+    return "";
   }
 
   return (
@@ -460,7 +544,7 @@ export default function SimStorePage() {
                     </div>
                   </div>
 
-                  <div className="mb-5 flex items-center justify-between">
+                  <div className="mb-3 flex items-center justify-between">
                     <div className="text-sm">
                       {n.status === "sold" ? (
                         <span className="font-semibold text-red-300">● Owned</span>
@@ -473,6 +557,23 @@ export default function SimStorePage() {
                     <div className="text-xs text-white/45">
                       1 Device = 1 SIM
                     </div>
+                  </div>
+
+                  <div className="mb-5">
+                    {n.is_giveaway ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg font-bold text-yellow-300">
+                          FREE
+                        </span>
+                        <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-[10px] font-medium text-yellow-300">
+                          GIVEAWAY
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="text-sm font-semibold text-cyan-300">
+                        {getPriceLabel(n)}
+                      </div>
+                    )}
                   </div>
 
                   {n.status === "available" && (
@@ -529,6 +630,23 @@ export default function SimStorePage() {
                     <div className="text-[10px] font-bold tracking-[0.16em] text-white/45">
                       {getBadge(n)}
                     </div>
+                  </div>
+
+                  <div className="mt-4">
+                    {n.is_giveaway ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg font-bold text-yellow-300">
+                          FREE
+                        </span>
+                        <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-[10px] font-medium text-yellow-300">
+                          GIVEAWAY
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="text-sm font-semibold text-cyan-300">
+                        {getPriceLabel(n)}
+                      </div>
+                    )}
                   </div>
 
                   <button
