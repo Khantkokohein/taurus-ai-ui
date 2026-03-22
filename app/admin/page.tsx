@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { supabase } from "../../lib/client";
 
 type SimType = "normal" | "premium" | "vip";
 type SimStatus = "available" | "sold";
 
 type SimItem = {
-  id: number;
+  id: string;
   number: string;
   price: number;
   type: SimType;
@@ -17,18 +18,37 @@ type SimItem = {
 };
 
 type OwnerClaim = {
-  id: number;
-  simId: number;
+  id: string;
   number: string;
   ownerName: string;
   ownerNote: string;
   claimedAt: string;
-  source: "owner_direct";
+};
+
+type NumberRow = {
+  id: string;
+  number: string | null;
+  suffix_7: string | null;
+  tier: string | null;
+  status: string | null;
+  created_at: string | null;
+  price: number | null;
+  is_on_sale: boolean | null;
+  sale_price: number | null;
+};
+
+type OwnershipRow = {
+  id: string;
+  number: string | null;
+  owner_name: string | null;
+  owner_note: string | null;
+  created_at: string | null;
+  active: boolean | null;
 };
 
 function formatPrice(value: number | null) {
   if (value === null) return "-";
-  return `${value.toLocaleString()} TAT`;
+  return `${Number(value).toLocaleString()} TAT`;
 }
 
 function getTypeBadge(type: SimType) {
@@ -50,9 +70,9 @@ function getTypeBadge(type: SimType) {
 
   return (
     <span className="inline-flex rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-xs font-medium text-cyan-300">
-        Normal
-      </span>
-    );
+      Normal
+    </span>
+  );
 }
 
 function getStatusBadge(status: SimStatus) {
@@ -66,9 +86,30 @@ function getStatusBadge(status: SimStatus) {
 
   return (
     <span className="inline-flex rounded-full border border-green-400/30 bg-green-400/10 px-2.5 py-1 text-xs font-medium text-green-300">
-      Available
-    </span>
-  );
+        Available
+      </span>
+    );
+  }
+
+function mapTierToType(tier: string | null): SimType {
+  const value = (tier || "").toLowerCase();
+
+  if (value === "vip") return "vip";
+  if (value === "premium") return "premium";
+  return "normal";
+}
+
+function mapRowToSimItem(row: NumberRow): SimItem {
+  return {
+    id: row.id,
+    number: row.number || row.suffix_7 || "",
+    price: Number(row.price ?? 1000),
+    type: mapTierToType(row.tier),
+    isOnSale: Boolean(row.is_on_sale),
+    salePrice: row.sale_price === null ? null : Number(row.sale_price),
+    status: row.status === "sold" ? "sold" : "available",
+    createdAt: row.created_at || new Date().toISOString(),
+  };
 }
 
 export default function AdminPage() {
@@ -89,23 +130,57 @@ export default function AdminPage() {
   const [isClaiming, setIsClaiming] = useState(false);
 
   useEffect(() => {
-    const stored = JSON.parse(localStorage.getItem("sim_numbers") || "[]");
-    const storedClaims = JSON.parse(localStorage.getItem("sim_owner_claims") || "[]");
-    setList(stored);
-    setClaims(storedClaims);
+    void loadAll();
   }, []);
 
-  const saveList = (updated: SimItem[]) => {
-    localStorage.setItem("sim_numbers", JSON.stringify(updated));
-    setList(updated);
+  const loadAll = async () => {
+    await Promise.all([loadNumbers(), loadClaims()]);
   };
 
-  const saveClaims = (updated: OwnerClaim[]) => {
-    localStorage.setItem("sim_owner_claims", JSON.stringify(updated));
-    setClaims(updated);
+  const loadNumbers = async () => {
+    const { data, error } = await supabase
+      .from("numbers")
+      .select(
+        "id, number, suffix_7, tier, status, created_at, price, is_on_sale, sale_price"
+      )
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Load numbers error:", error.message);
+      alert(`Failed to load numbers: ${error.message}`);
+      return;
+    }
+
+    const mapped = ((data || []) as NumberRow[]).map(mapRowToSimItem);
+    setList(mapped);
   };
 
-  const addNumber = () => {
+  const loadClaims = async () => {
+    const { data, error } = await supabase
+      .from("ownership")
+      .select("id, number, owner_name, owner_note, created_at, active")
+      .eq("active", true)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Load ownership error:", error.message);
+      return;
+    }
+
+    const mapped: OwnerClaim[] = ((data || []) as OwnershipRow[])
+      .filter((item) => item.number)
+      .map((item) => ({
+        id: item.id,
+        number: item.number || "",
+        ownerName: item.owner_name || "Owner",
+        ownerNote: item.owner_note || "",
+        claimedAt: item.created_at || new Date().toISOString(),
+      }));
+
+    setClaims(mapped);
+  };
+
+  const addNumber = async () => {
     const cleanNumber = number.trim();
 
     if (!cleanNumber) {
@@ -139,18 +214,22 @@ export default function AdminPage() {
       }
     }
 
-    const newItem: SimItem = {
-      id: Date.now(),
-      number: cleanNumber,
-      price,
-      type,
-      isOnSale,
-      salePrice: finalSalePrice,
-      status,
-      createdAt: new Date().toISOString(),
-    };
+    const { error } = await supabase.from("numbers").insert([
+      {
+        number: cleanNumber,
+        suffix_7: cleanNumber,
+        tier: type,
+        status,
+        price,
+        is_on_sale: isOnSale,
+        sale_price: finalSalePrice,
+      },
+    ]);
 
-    saveList([newItem, ...list]);
+    if (error) {
+      alert(`Failed to add number: ${error.message}`);
+      return;
+    }
 
     setNumber("");
     setPrice(1000);
@@ -158,37 +237,52 @@ export default function AdminPage() {
     setIsOnSale(false);
     setSalePrice("");
     setStatus("available");
+
+    await loadNumbers();
   };
 
-  const deleteNumber = (id: number) => {
+  const deleteNumber = async (id: string, simNumber: string) => {
     const ok = window.confirm("Delete this number?");
     if (!ok) return;
 
-    const updatedList = list.filter((item) => item.id !== id);
-    const updatedClaims = claims.filter((item) => item.simId !== id);
+    const { error } = await supabase.from("numbers").delete().eq("id", id);
 
-    saveList(updatedList);
-    saveClaims(updatedClaims);
-  };
-
-  const toggleSoldStatus = (id: number) => {
-    const updated = list.map((item) => {
-      if (item.id !== id) return item;
-
-      if (item.status === "sold") {
-        return { ...item, status: "available" as SimStatus };
-      }
-
-      return { ...item, status: "sold" as SimStatus };
-    });
-
-    const changedItem = updated.find((item) => item.id === id);
-
-    if (changedItem?.status === "available") {
-      saveClaims(claims.filter((item) => item.simId !== id));
+    if (error) {
+      alert(`Failed to delete number: ${error.message}`);
+      return;
     }
 
-    saveList(updated);
+    await supabase.from("ownership").update({ active: false }).eq("number", simNumber);
+
+    await loadAll();
+  };
+
+  const toggleSoldStatus = async (id: string) => {
+    const currentItem = list.find((item) => item.id === id);
+    if (!currentItem) return;
+
+    const nextStatus: SimStatus =
+      currentItem.status === "sold" ? "available" : "sold";
+
+    const { error } = await supabase
+      .from("numbers")
+      .update({ status: nextStatus })
+      .eq("id", id);
+
+    if (error) {
+      alert(`Failed to update status: ${error.message}`);
+      return;
+    }
+
+    if (nextStatus === "available") {
+      await supabase
+        .from("ownership")
+        .update({ active: false })
+        .eq("number", currentItem.number)
+        .eq("active", true);
+    }
+
+    await loadAll();
   };
 
   const openClaimModal = (item: SimItem) => {
@@ -206,7 +300,7 @@ export default function AdminPage() {
     setIsClaiming(false);
   };
 
-  const assignToMe = () => {
+  const assignToMe = async () => {
     if (!selectedItem) return;
 
     const cleanOwnerName = ownerName.trim();
@@ -217,27 +311,42 @@ export default function AdminPage() {
 
     setIsClaiming(true);
 
-    const updatedList = list.map((item) =>
-      item.id === selectedItem.id
-        ? { ...item, status: "sold" as SimStatus }
-        : item
-    );
+    const { error: numberError } = await supabase
+      .from("numbers")
+      .update({ status: "sold" })
+      .eq("id", selectedItem.id);
 
-    const filteredClaims = claims.filter((item) => item.simId !== selectedItem.id);
+    if (numberError) {
+      alert(`Failed to assign number: ${numberError.message}`);
+      setIsClaiming(false);
+      return;
+    }
 
-    const newClaim: OwnerClaim = {
-      id: Date.now(),
-      simId: selectedItem.id,
-      number: selectedItem.number,
-      ownerName: cleanOwnerName,
-      ownerNote: ownerNote.trim(),
-      claimedAt: new Date().toISOString(),
-      source: "owner_direct",
-    };
+    await supabase
+      .from("ownership")
+      .update({ active: false })
+      .eq("number", selectedItem.number)
+      .eq("active", true);
 
-    saveList(updatedList);
-    saveClaims([newClaim, ...filteredClaims]);
+    const { error: ownershipError } = await supabase.from("ownership").insert([
+      {
+        number: selectedItem.number,
+        owner_name: cleanOwnerName,
+        owner_note: ownerNote.trim() || null,
+        owner_nrc: null,
+        device_id: null,
+        registration_id: null,
+        active: true,
+      },
+    ]);
 
+    if (ownershipError) {
+      alert(`Failed to save ownership: ${ownershipError.message}`);
+      setIsClaiming(false);
+      return;
+    }
+
+    await loadAll();
     alert("Number assigned to owner successfully.");
     closeClaimModal();
   };
@@ -260,9 +369,9 @@ export default function AdminPage() {
   }, [list]);
 
   const claimMap = useMemo(() => {
-    const map = new Map<number, OwnerClaim>();
+    const map = new Map<string, OwnerClaim>();
     for (const item of claims) {
-      map.set(item.simId, item);
+      map.set(item.number, item);
     }
     return map;
   }, [claims]);
@@ -283,44 +392,57 @@ export default function AdminPage() {
               SIM Store Control Panel
             </h1>
             <p className="mt-4 max-w-2xl text-base leading-8 text-white/75 md:text-lg">
-              Add, price, discount, and control sold status for Taurus SIM numbers.
+              Add, price, discount, and control sold status for Taurus SIM
+              numbers.
             </p>
           </div>
 
           <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-200 backdrop-blur">
-            Local mode active • data saved in browser
+            Supabase live mode • data saved in database
           </div>
         </div>
 
         <div className="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <div className="text-sm text-white/60">Total</div>
-            <div className="mt-2 text-3xl font-bold text-cyan-300">{stats.total}</div>
+            <div className="mt-2 text-3xl font-bold text-cyan-300">
+              {stats.total}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <div className="text-sm text-white/60">Normal</div>
-            <div className="mt-2 text-3xl font-bold text-cyan-300">{stats.normal}</div>
+            <div className="mt-2 text-3xl font-bold text-cyan-300">
+              {stats.normal}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <div className="text-sm text-white/60">Premium</div>
-            <div className="mt-2 text-3xl font-bold text-yellow-300">{stats.premium}</div>
+            <div className="mt-2 text-3xl font-bold text-yellow-300">
+              {stats.premium}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <div className="text-sm text-white/60">VIP</div>
-            <div className="mt-2 text-3xl font-bold text-red-300">{stats.vip}</div>
+            <div className="mt-2 text-3xl font-bold text-red-300">
+              {stats.vip}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <div className="text-sm text-white/60">On Sale</div>
-            <div className="mt-2 text-3xl font-bold text-green-300">{stats.onSale}</div>
+            <div className="mt-2 text-3xl font-bold text-green-300">
+              {stats.onSale}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur">
             <div className="text-sm text-white/60">Sold</div>
-            <div className="mt-2 text-3xl font-bold text-white">{stats.sold}</div>
+            <div className="mt-2 text-3xl font-bold text-white">
+              {stats.sold}
+            </div>
           </div>
         </div>
 
@@ -393,7 +515,9 @@ export default function AdminPage() {
                 <div className="rounded-2xl border border-white/10 bg-[#0b1228] p-4">
                   <div className="flex items-center justify-between gap-4">
                     <div>
-                      <div className="text-sm font-medium text-white">Sale Mode</div>
+                      <div className="text-sm font-medium text-white">
+                        Sale Mode
+                      </div>
                       <div className="mt-1 text-xs text-white/50">
                         Enable discount pricing for this SIM.
                       </div>
@@ -501,7 +625,7 @@ export default function AdminPage() {
             <div className="mb-6">
               <h2 className="text-2xl font-bold">Store Records</h2>
               <p className="mt-1 text-sm text-white/60">
-                Review all SIM listings currently stored in local mode.
+                Review all SIM listings currently stored in database mode.
               </p>
             </div>
 
@@ -521,7 +645,7 @@ export default function AdminPage() {
                 </div>
               ) : (
                 filteredList.map((item) => {
-                  const claim = claimMap.get(item.id);
+                  const claim = claimMap.get(item.number);
 
                   return (
                     <div
@@ -540,7 +664,7 @@ export default function AdminPage() {
                         </div>
 
                         <button
-                          onClick={() => deleteNumber(item.id)}
+                          onClick={() => deleteNumber(item.id, item.number)}
                           className="rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-1.5 text-xs font-medium text-red-300 transition hover:bg-red-400/15"
                         >
                           Delete
@@ -554,10 +678,20 @@ export default function AdminPage() {
                       <div className="mt-3 space-y-1 text-sm text-white/60">
                         <div>Main Price: {formatPrice(item.price)}</div>
                         <div>
-                          Sale Price: {item.isOnSale ? formatPrice(item.salePrice) : "Not on sale"}
+                          Sale Price:{" "}
+                          {item.isOnSale
+                            ? formatPrice(item.salePrice)
+                            : "Not on sale"}
                         </div>
-                        <div>Status: {item.status === "sold" ? "Sale completed" : "Available now"}</div>
-                        <div>Added: {new Date(item.createdAt).toLocaleString()}</div>
+                        <div>
+                          Status:{" "}
+                          {item.status === "sold"
+                            ? "Sale completed"
+                            : "Available now"}
+                        </div>
+                        <div>
+                          Added: {new Date(item.createdAt).toLocaleString()}
+                        </div>
                       </div>
 
                       {claim && (
@@ -605,13 +739,14 @@ export default function AdminPage() {
                               : "border border-white/10 bg-white/5 text-white hover:bg-white/10"
                           }`}
                         >
-                          {item.status === "sold" ? "Mark Available" : "Mark Sold"}
+                          {item.status === "sold"
+                            ? "Mark Available"
+                            : "Mark Sold"}
                         </button>
 
                         <button
                           onClick={() => openClaimModal(item)}
-                          disabled={item.status === "sold" && !claim}
-                          className="rounded-xl border border-yellow-400/25 bg-yellow-400/10 px-4 py-2 text-sm font-medium text-yellow-200 transition hover:bg-yellow-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="rounded-xl border border-yellow-400/25 bg-yellow-400/10 px-4 py-2 text-sm font-medium text-yellow-200 transition hover:bg-yellow-400/15"
                         >
                           Assign to Me
                         </button>
@@ -630,7 +765,7 @@ export default function AdminPage() {
           <div className="w-full max-w-xl rounded-3xl border border-cyan-400/20 bg-[#0b1026] p-6 text-white">
             <h2 className="text-2xl font-bold">Assign Number to Owner</h2>
             <p className="mt-2 text-white/70">
-              This will keep the original add flow unchanged and directly reserve this number for the owner.
+              This will directly reserve this number for the owner in database.
             </p>
 
             <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4">
