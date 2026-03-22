@@ -300,17 +300,19 @@ export default function SimStorePage() {
     const safeNumber = selected?.number?.replace(/\s+/g, "") || "unknown";
     const filename = `${folder}/${deviceId}-${safeNumber}-${Date.now()}.${ext}`;
 
-    const { error } = await supabase.storage.from(bucket).upload(filename, file, {
-      cacheControl: "3600",
-      upsert: false,
-    });
+    const { error } = await supabase.storage
+      .from(bucket)
+      .upload(filename, file, {
+        cacheControl: "3600",
+        upsert: false,
+      });
 
     if (error) {
       throw new Error(`${bucket} upload failed: ${error.message}`);
     }
 
     const { data } = supabase.storage.from(bucket).getPublicUrl(filename);
-    return data.publicUrl;
+    return data?.publicUrl || "";
   }
 
   async function confirmOwnership() {
@@ -325,15 +327,18 @@ export default function SimStorePage() {
     try {
       const currentDeviceId = deviceId || initDevice();
 
-      const { data: existingOwnership, error: ownershipCheckError } = await supabase
-        .from("ownership")
-        .select("id")
-        .eq("device_id", currentDeviceId)
-        .eq("active", true)
-        .limit(1);
+      const { data: existingOwnership, error: ownershipCheckError } =
+        await supabase
+          .from("ownership")
+          .select("id")
+          .eq("device_id", currentDeviceId)
+          .eq("active", true)
+          .limit(1);
 
       if (ownershipCheckError) {
-        throw new Error(`Ownership check failed: ${ownershipCheckError.message}`);
+        throw new Error(
+          `Ownership check failed: ${ownershipCheckError.message}`
+        );
       }
 
       if (existingOwnership && existingOwnership.length > 0) {
@@ -355,9 +360,21 @@ export default function SimStorePage() {
         throw new Error("This SIM is no longer available");
       }
 
-      const selfieUrl = await uploadImage(selfieFile!, "sim-selfies", "selfies");
-      const nrcFrontUrl = await uploadImage(nrcFrontFile!, "sim-nrc", "nrc-front");
-      const nrcBackUrl = await uploadImage(nrcBackFile!, "sim-nrc", "nrc-back");
+      const selfieUrl = await uploadImage(
+        selfieFile!,
+        "sim-selfies",
+        "selfies"
+      );
+      const nrcFrontUrl = await uploadImage(
+        nrcFrontFile!,
+        "sim-nrc",
+        "nrc-front"
+      );
+      const nrcBackUrl = await uploadImage(
+        nrcBackFile!,
+        "sim-nrc",
+        "nrc-back"
+      );
 
       const registrationPayload = {
         number: selected.number,
@@ -374,20 +391,22 @@ export default function SimStorePage() {
         status: "approved",
       };
 
-      const { data: registrationInsert, error: registrationError } = await supabase
-        .from("sim_registrations")
-        .insert([registrationPayload])
-        .select("id")
-        .single();
+      const { data: registrationInsert, error: registrationError } =
+        await supabase
+          .from("sim_registrations")
+          .insert([registrationPayload])
+          .select("id")
+          .single();
 
       if (registrationError) {
-        throw new Error(`Registration save failed: ${registrationError.message}`);
+        throw new Error(
+          `Registration save failed: ${registrationError.message}`
+        );
       }
 
       const ownershipPayload = {
         user_id: null,
         number_id: selected.id,
-        number: selected.number,
         owner_name: form.full_name.trim(),
         owner_nrc: form.nrc.trim(),
         owner_note: null,
@@ -543,9 +562,13 @@ export default function SimStorePage() {
                   <div className="mb-3 flex items-center justify-between">
                     <div className="text-sm">
                       {n.status === "sold" ? (
-                        <span className="font-semibold text-red-300">● Owned</span>
+                        <span className="font-semibold text-red-300">
+                          ● Owned
+                        </span>
                       ) : (
-                        <span className="font-semibold text-green-300">● Available</span>
+                        <span className="font-semibold text-green-300">
+                          ● Available
+                        </span>
                       )}
                     </div>
                     <div className="text-xs text-white/45">1 Device = 1 SIM</div>
@@ -554,7 +577,9 @@ export default function SimStorePage() {
                   <div className="mb-5">
                     {n.is_giveaway ? (
                       <div className="flex items-center gap-2">
-                        <span className="text-lg font-bold text-yellow-300">FREE</span>
+                        <span className="text-lg font-bold text-yellow-300">
+                          FREE
+                        </span>
                         <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-[10px] font-medium text-yellow-300">
                           GIVEAWAY
                         </span>
@@ -613,7 +638,9 @@ export default function SimStorePage() {
 
                   <div className="mt-3 flex items-center justify-between">
                     <div className="text-sm">
-                      <span className="font-semibold text-green-300">● Available</span>
+                      <span className="font-semibold text-green-300">
+                        ● Available
+                      </span>
                     </div>
                     <div className="text-[10px] font-bold tracking-[0.16em] text-white/45">
                       {getBadge(n)}
@@ -623,7 +650,9 @@ export default function SimStorePage() {
                   <div className="mt-4">
                     {n.is_giveaway ? (
                       <div className="flex items-center gap-2">
-                        <span className="text-lg font-bold text-yellow-300">FREE</span>
+                        <span className="text-lg font-bold text-yellow-300">
+                          FREE
+                        </span>
                         <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-[10px] font-medium text-yellow-300">
                           GIVEAWAY
                         </span>
@@ -674,7 +703,9 @@ export default function SimStorePage() {
                   <div className="mt-2 text-2xl font-black tracking-[0.14em] text-white/80">
                     +70 20 {n.number}
                   </div>
-                  <div className="mt-3 text-sm font-semibold text-red-300">● Owned</div>
+                  <div className="mt-3 text-sm font-semibold text-red-300">
+                    ● Owned
+                  </div>
                 </div>
               ))}
             </div>
@@ -813,17 +844,25 @@ export default function SimStorePage() {
             {step === 5 && (
               <div className="space-y-4">
                 <div className="rounded-[26px] border border-white/10 bg-white/5 p-5">
-                  <div className="mb-4 text-lg font-bold">Review Information</div>
+                  <div className="mb-4 text-lg font-bold">
+                    Review Information
+                  </div>
 
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <ReviewItem label="Selected Number" value={`+70 20 ${selected.number}`} />
+                    <ReviewItem
+                      label="Selected Number"
+                      value={`+70 20 ${selected.number}`}
+                    />
                     <ReviewItem label="Device ID" value={deviceId} />
                     <ReviewItem label="Full Name" value={form.full_name} />
                     <ReviewItem label="Age" value={form.age} />
                     <ReviewItem label="NRC / ID" value={form.nrc} />
                     <ReviewItem label="Occupation" value={form.job} />
                     <ReviewItem label="Address" value={form.address} />
-                    <ReviewItem label="Father Name" value={form.father_name} />
+                    <ReviewItem
+                      label="Father Name"
+                      value={form.father_name}
+                    />
                   </div>
                 </div>
 
@@ -931,8 +970,12 @@ function UploadCard({
           />
         ) : (
           <div className="text-center">
-            <div className="mb-2 text-sm font-bold text-cyan-300">Tap to Upload</div>
-            <div className="text-xs text-white/45">PNG, JPG, JPEG under 5MB</div>
+            <div className="mb-2 text-sm font-bold text-cyan-300">
+              Tap to Upload
+            </div>
+            <div className="text-xs text-white/45">
+              PNG, JPG, JPEG under 5MB
+            </div>
           </div>
         )}
       </label>
@@ -954,7 +997,9 @@ function ReviewItem({ label, value }: { label: string; value: string }) {
       <div className="mb-1 text-xs font-bold uppercase tracking-[0.16em] text-white/40">
         {label}
       </div>
-      <div className="break-words text-sm font-semibold text-white/85">{value}</div>
+      <div className="break-words text-sm font-semibold text-white/85">
+        {value}
+      </div>
     </div>
   );
 }
