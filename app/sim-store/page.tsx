@@ -67,6 +67,7 @@ export default function SimStorePage() {
     const { data, error } = await supabase
       .from("numbers")
       .select("*")
+      .eq("status", "available")
       .order("number", { ascending: true });
 
     if (error) {
