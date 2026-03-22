@@ -36,6 +36,13 @@ type IncomingOffer = {
   sdp: RTCSessionDescriptionInit;
 };
 
+type OwnershipLite = {
+  id: string;
+  number: string | null;
+  device_id: string | null;
+  active: boolean | null;
+};
+
 const PHONE_PREFIX = "+70 20 ";
 const MAX_SUFFIX_DIGITS = 7;
 
@@ -116,6 +123,7 @@ export default function CallPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("keypad");
 
   const [myNumber, setMyNumber] = useState(PHONE_PREFIX);
+  const [ownedSuffix, setOwnedSuffix] = useState("");
   const [targetNumber, setTargetNumber] = useState(PHONE_PREFIX);
 
   const [contacts, setContacts] = useState<ContactItem[]>(defaultContacts);
@@ -123,7 +131,7 @@ export default function CallPage() {
   const [contactSearch, setContactSearch] = useState("");
 
   const [callPhase, setCallPhase] = useState<CallPhase>("idle");
-  const [callStatus, setCallStatus] = useState("Set your number and dial target");
+  const [callStatus, setCallStatus] = useState("Checking owned number...");
   const [showCallScreen, setShowCallScreen] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -146,6 +154,11 @@ export default function CallPage() {
   const timerRef = useRef<number | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const currentRemoteRef = useRef<string>("");
+  const callConnectedRef = useRef(false);
+
+  const ringtoneContextRef = useRef<AudioContext | null>(null);
+  const ringtoneIntervalRef = useRef<number | null>(null);
+  const ringtoneTimeoutsRef = useRef<number[]>([]);
 
   useEffect(() => {
     const storedContacts = safeJsonParse<ContactItem[]>(
@@ -156,13 +169,13 @@ export default function CallPage() {
       localStorage.getItem("taurus_recents"),
       defaultRecents
     );
-    const storedMyNumber = localStorage.getItem("taurus_my_number");
     const storedTarget = localStorage.getItem("taurus_target_number");
 
     setContacts(storedContacts);
     setRecents(storedRecents);
-    if (storedMyNumber) setMyNumber(storedMyNumber);
     if (storedTarget) setTargetNumber(storedTarget);
+
+    void bindOwnedNumber();
   }, []);
 
   useEffect(() => {
@@ -172,10 +185,6 @@ export default function CallPage() {
   useEffect(() => {
     localStorage.setItem("taurus_recents", JSON.stringify(recents));
   }, [recents]);
-
-  useEffect(() => {
-    localStorage.setItem("taurus_my_number", myNumber);
-  }, [myNumber]);
 
   useEffect(() => {
     localStorage.setItem("taurus_target_number", targetNumber);
@@ -188,6 +197,13 @@ export default function CallPage() {
       .on("broadcast", { event: "offer" }, ({ payload }) => {
         if (!payload?.to || payload.to !== myNumber) return;
         if (!isValidTaurusNumber(myNumber)) return;
+        if (callPhase === "in-call" || callPhase === "connecting" || callPhase === "calling") {
+          void sendSignal("end-call", {
+            from: myNumber,
+            to: payload.from,
+          });
+          return;
+        }
 
         const offer: IncomingOffer = {
           from: payload.from,
@@ -201,6 +217,7 @@ export default function CallPage() {
         setCallPhase("incoming");
         setCallStatus(`Incoming call from ${payload.from}`);
         setShowIncomingModal(true);
+        startRingtone("incoming");
       })
       .on("broadcast", { event: "answer" }, async ({ payload }) => {
         if (!payload?.to || payload.to !== myNumber) return;
@@ -214,10 +231,12 @@ export default function CallPage() {
           }
           pendingCandidatesRef.current = [];
 
+          stopRingtone();
           setCallPhase("connecting");
           setCallStatus("Answer received. Connecting...");
         } catch (error) {
           console.error("answer error", error);
+          stopRingtone();
           setCallPhase("failed");
           setCallStatus("Answer failed");
         }
@@ -241,7 +260,15 @@ export default function CallPage() {
       .on("broadcast", { event: "end-call" }, ({ payload }) => {
         if (!payload?.to || payload.to !== myNumber) return;
 
+        stopRingtone();
+
+        if (!callConnectedRef.current && currentRemoteRef.current) {
+          addRecent(currentRemoteRef.current, "missed");
+        }
+
         cleanupCall();
+        setIncomingOffer(null);
+        setIncomingFrom("");
         setShowIncomingModal(false);
         setShowCallScreen(false);
         setCallPhase("ended");
@@ -260,9 +287,10 @@ export default function CallPage() {
         void supabase.removeChannel(channelRef.current);
         channelRef.current = null;
       }
+      stopRingtone();
       cleanupCall();
     };
-  }, [myNumber]);
+  }, [myNumber, callPhase]);
 
   useEffect(() => {
     if (!showCallScreen || callPhase !== "in-call") return;
@@ -291,32 +319,46 @@ export default function CallPage() {
     }
   }, [speakerOn]);
 
-  const filteredContacts = useMemo(() => {
-    const q = contactSearch.trim().toLowerCase();
-    if (!q) return contacts;
+  async function bindOwnedNumber() {
+    const deviceId = getOrCreateDeviceId();
 
-    return contacts.filter(
-      (c) => c.name.toLowerCase().includes(q) || c.number.toLowerCase().includes(q)
-    );
-  }, [contacts, contactSearch]);
+    const { data, error } = await supabase
+      .from("ownership")
+      .select("id, number, device_id, active")
+      .eq("device_id", deviceId)
+      .eq("active", true)
+      .limit(1);
 
-  const favoriteContacts = useMemo(
-    () => contacts.filter((c) => c.isFavorite),
-    [contacts]
-  );
+    if (error) {
+      console.error("bind owned number error", error.message);
+      setCallStatus("Failed to load owned number");
+      return;
+    }
 
-  const activeCallName = useMemo(() => {
-    const found = contacts.find((c) => c.number === currentRemoteRef.current);
-    return found?.name || currentRemoteRef.current || "Unknown";
-  }, [contacts, currentRemoteRef.current, callPhase]);
+    const owned = (data || []) as OwnershipLite[];
 
-  const formattedDuration = useMemo(() => {
-    const mins = Math.floor(callSeconds / 60)
-      .toString()
-      .padStart(2, "0");
-    const secs = (callSeconds % 60).toString().padStart(2, "0");
-    return `${mins}:${secs}`;
-  }, [callSeconds]);
+    if (owned.length > 0 && owned[0].number) {
+      const suffix = String(owned[0].number).replace(/\D/g, "").slice(-7);
+      setOwnedSuffix(suffix);
+      setMyNumber(`${PHONE_PREFIX}${suffix}`);
+      setCallStatus("Owned number bound successfully");
+    } else {
+      setOwnedSuffix("");
+      setMyNumber(PHONE_PREFIX);
+      setCallStatus("No owned number found for this device");
+    }
+  }
+
+  function getOrCreateDeviceId() {
+    let id = localStorage.getItem("device_id");
+
+    if (!id) {
+      id = "DEV-" + Math.random().toString(36).substring(2, 12).toUpperCase();
+      localStorage.setItem("device_id", id);
+    }
+
+    return id;
+  }
 
   function addRecent(number: string, type: "incoming" | "outgoing" | "missed") {
     const matched = contacts.find((c) => c.number === number);
@@ -358,11 +400,95 @@ export default function CallPage() {
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
 
     pendingCandidatesRef.current = [];
+    callConnectedRef.current = false;
     setCallSeconds(0);
     setMuted(false);
   }
 
-  async function sendSignal(event: "offer" | "answer" | "ice-candidate" | "end-call", payload: any) {
+  function getAudioContext() {
+    const AudioContextCtor =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+    if (!AudioContextCtor) return null;
+
+    if (!ringtoneContextRef.current) {
+      ringtoneContextRef.current = new AudioContextCtor();
+    }
+
+    return ringtoneContextRef.current;
+  }
+
+  function scheduleBeep(
+    ctx: AudioContext,
+    frequency: number,
+    durationMs: number,
+    delayMs = 0,
+    gainValue = 0.05
+  ) {
+    const timeoutId = window.setTimeout(() => {
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      oscillator.type = "sine";
+      oscillator.frequency.value = frequency;
+      gain.gain.value = gainValue;
+
+      oscillator.connect(gain);
+      gain.connect(ctx.destination);
+
+      oscillator.start();
+      window.setTimeout(() => {
+        oscillator.stop();
+        oscillator.disconnect();
+        gain.disconnect();
+      }, durationMs);
+    }, delayMs);
+
+    ringtoneTimeoutsRef.current.push(timeoutId);
+  }
+
+  function stopRingtone() {
+    if (ringtoneIntervalRef.current) {
+      window.clearInterval(ringtoneIntervalRef.current);
+      ringtoneIntervalRef.current = null;
+    }
+
+    ringtoneTimeoutsRef.current.forEach((id) => window.clearTimeout(id));
+    ringtoneTimeoutsRef.current = [];
+  }
+
+  function startRingtone(kind: "incoming" | "outgoing") {
+    stopRingtone();
+
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    if (ctx.state === "suspended") {
+      void ctx.resume().catch(() => {});
+    }
+
+    const playPattern = () => {
+      if (kind === "incoming") {
+        scheduleBeep(ctx, 880, 180, 0, 0.05);
+        scheduleBeep(ctx, 660, 180, 280, 0.05);
+      } else {
+        scheduleBeep(ctx, 520, 220, 0, 0.045);
+        scheduleBeep(ctx, 520, 220, 350, 0.045);
+      }
+    };
+
+    playPattern();
+    ringtoneIntervalRef.current = window.setInterval(
+      playPattern,
+      kind === "incoming" ? 1800 : 1600
+    );
+  }
+
+  async function sendSignal(
+    event: "offer" | "answer" | "ice-candidate" | "end-call",
+    payload: any
+  ) {
     if (!channelRef.current) return;
 
     const result = await channelRef.current.send({
@@ -409,12 +535,15 @@ export default function CallPage() {
       const state = peer.connectionState;
 
       if (state === "connected") {
+        callConnectedRef.current = true;
+        stopRingtone();
         setCallPhase("in-call");
         setCallStatus("Connected");
       } else if (state === "connecting") {
         setCallPhase("connecting");
         setCallStatus("Connecting...");
       } else if (state === "failed" || state === "disconnected") {
+        stopRingtone();
         setCallPhase("failed");
         setCallStatus("Call failed");
       }
@@ -435,9 +564,26 @@ export default function CallPage() {
     return peer;
   }
 
+  async function validateTargetOwnership(numberWithPrefix: string) {
+    const suffix = getSuffix(numberWithPrefix);
+
+    const { data, error } = await supabase
+      .from("ownership")
+      .select("id, number, active")
+      .eq("number", suffix)
+      .eq("active", true)
+      .limit(1);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return (data || []).length > 0;
+  }
+
   async function placeCall() {
-    if (!isValidTaurusNumber(myNumber)) {
-      setCallStatus("Set valid My Number first");
+    if (!ownedSuffix || !isValidTaurusNumber(myNumber)) {
+      setCallStatus("No owned number is bound to this device");
       return;
     }
 
@@ -452,6 +598,14 @@ export default function CallPage() {
     }
 
     try {
+      const targetExists = await validateTargetOwnership(targetNumber);
+
+      if (!targetExists) {
+        setCallStatus("Target number is not registered yet");
+        return;
+      }
+
+      stopRingtone();
       cleanupCall();
       setShowCallScreen(true);
       setCallPhase("requesting-media");
@@ -462,10 +616,7 @@ export default function CallPage() {
       setCallPhase("calling");
       setCallStatus("Creating offer...");
 
-      const offer = await peer.createOffer({
-        offerToReceiveAudio: true,
-      });
-
+      const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
 
       addRecent(targetNumber, "outgoing");
@@ -476,14 +627,18 @@ export default function CallPage() {
         sdp: offer,
       });
 
-      setCallStatus("Calling...");
       currentRemoteRef.current = targetNumber;
+      setCallStatus("Calling...");
+      startRingtone("outgoing");
     } catch (error) {
       console.error("place call failed", error);
+      stopRingtone();
       cleanupCall();
       setShowCallScreen(false);
       setCallPhase("failed");
-      setCallStatus("Failed to start call");
+      setCallStatus(
+        error instanceof Error ? error.message : "Failed to start call"
+      );
     }
   }
 
@@ -491,6 +646,7 @@ export default function CallPage() {
     if (!incomingOffer) return;
 
     try {
+      stopRingtone();
       setShowIncomingModal(false);
       setShowCallScreen(true);
       setCallPhase("requesting-media");
@@ -520,8 +676,10 @@ export default function CallPage() {
       setCallPhase("connecting");
       setCallStatus("Answer sent. Connecting...");
       setIncomingOffer(null);
+      setIncomingFrom("");
     } catch (error) {
       console.error("accept call failed", error);
+      stopRingtone();
       cleanupCall();
       setShowCallScreen(false);
       setCallPhase("failed");
@@ -530,6 +688,8 @@ export default function CallPage() {
   }
 
   async function rejectIncomingCall() {
+    stopRingtone();
+
     if (incomingOffer) {
       addRecent(incomingOffer.from, "missed");
       await sendSignal("end-call", {
@@ -546,9 +706,14 @@ export default function CallPage() {
   }
 
   async function endCall() {
+    stopRingtone();
     const remote = currentRemoteRef.current;
+
     cleanupCall();
     setShowCallScreen(false);
+    setShowIncomingModal(false);
+    setIncomingOffer(null);
+    setIncomingFrom("");
     setCallPhase("ended");
     setCallStatus("Call ended");
 
@@ -613,6 +778,33 @@ export default function CallPage() {
       )
     );
   }
+
+  const filteredContacts = useMemo(() => {
+    const q = contactSearch.trim().toLowerCase();
+    if (!q) return contacts;
+
+    return contacts.filter(
+      (c) => c.name.toLowerCase().includes(q) || c.number.toLowerCase().includes(q)
+    );
+  }, [contacts, contactSearch]);
+
+  const favoriteContacts = useMemo(
+    () => contacts.filter((c) => c.isFavorite),
+    [contacts]
+  );
+
+  const activeCallName = useMemo(() => {
+    const found = contacts.find((c) => c.number === currentRemoteRef.current);
+    return found?.name || currentRemoteRef.current || "Unknown";
+  }, [contacts, currentRemoteRef.current]);
+
+  const formattedDuration = useMemo(() => {
+    const mins = Math.floor(callSeconds / 60)
+      .toString()
+      .padStart(2, "0");
+    const secs = (callSeconds % 60).toString().padStart(2, "0");
+    return `${mins}:${secs}`;
+  }, [callSeconds]);
 
   const tabButton = (key: TabKey, label: string) => {
     const active = activeTab === key;
@@ -773,10 +965,16 @@ export default function CallPage() {
           </div>
           <input
             value={myNumber}
+            readOnly={Boolean(ownedSuffix)}
             onChange={(e) => setMyNumber(normalizeNumber(e.target.value))}
-            className="w-full rounded-2xl border border-[#e5e5ea] bg-[#f7f7fa] px-4 py-3 text-center text-lg font-semibold text-[#111111] outline-none"
+            className="w-full rounded-2xl border border-[#e5e5ea] bg-[#f7f7fa] px-4 py-3 text-center text-lg font-semibold text-[#111111] outline-none read-only:cursor-not-allowed read-only:opacity-80"
             placeholder="+70 20 0000001"
           />
+          <div className="mt-2 text-xs text-[#8e8e93]">
+            {ownedSuffix
+              ? "Auto-bound from this device ownership"
+              : "No owned number bound yet"}
+          </div>
         </div>
 
         <div className="mt-4 text-center">
@@ -838,7 +1036,14 @@ export default function CallPage() {
         <button
           type="button"
           onClick={placeCall}
-          disabled={!isValidTaurusNumber(myNumber) || !isValidTaurusNumber(targetNumber) || callPhase === "calling" || callPhase === "connecting" || callPhase === "in-call"}
+          disabled={
+            !ownedSuffix ||
+            !isValidTaurusNumber(myNumber) ||
+            !isValidTaurusNumber(targetNumber) ||
+            callPhase === "calling" ||
+            callPhase === "connecting" ||
+            callPhase === "in-call"
+          }
           className="flex h-20 w-20 items-center justify-center rounded-full bg-[#34c759] text-3xl text-white shadow-[0_12px_30px_rgba(52,199,89,0.35)] transition active:scale-95 disabled:opacity-60"
         >
           📞
@@ -1017,7 +1222,9 @@ export default function CallPage() {
               <div className="mt-3 text-[34px] font-bold tracking-[-0.03em]">
                 {activeCallName || "Unknown"}
               </div>
-              <div className="mt-2 text-base text-white/75">{currentRemoteRef.current || targetNumber}</div>
+              <div className="mt-2 text-base text-white/75">
+                {currentRemoteRef.current || targetNumber}
+              </div>
               <div className="mt-3 text-sm text-[#9cc3ff]">
                 {callPhase === "in-call" ? formattedDuration : callStatus}
               </div>
