@@ -173,6 +173,10 @@ export default function CallPage() {
   const callConnectedRef = useRef(false);
   const myNumberRef = useRef(PHONE_PREFIX);
   const callPhaseRef = useRef<CallPhase>("idle");
+  const activeRemoteNumberRef = useRef("");
+  const showIncomingModalRef = useRef(false);
+  const incomingOfferRef = useRef<IncomingOffer | null>(null);
+  const sessionIdRef = useRef(0);
 
   const ringtoneContextRef = useRef<AudioContext | null>(null);
   const ringtoneIntervalRef = useRef<number | null>(null);
@@ -185,6 +189,18 @@ export default function CallPage() {
   useEffect(() => {
     callPhaseRef.current = callPhase;
   }, [callPhase]);
+
+  useEffect(() => {
+    activeRemoteNumberRef.current = activeRemoteNumber;
+  }, [activeRemoteNumber]);
+
+  useEffect(() => {
+    showIncomingModalRef.current = showIncomingModal;
+  }, [showIncomingModal]);
+
+  useEffect(() => {
+    incomingOfferRef.current = incomingOffer;
+  }, [incomingOffer]);
 
   useEffect(() => {
     const storedContacts = safeJsonParse<ContactItem[]>(
@@ -223,6 +239,7 @@ export default function CallPage() {
       .on("broadcast", { event: "offer" }, async ({ payload }) => {
         const mine = myNumberRef.current;
         if (!payload?.to || payload.to !== mine) return;
+        if (!payload?.from || !payload?.sdp) return;
         if (!isValidTaurusNumber(mine)) return;
 
         const busy =
@@ -230,7 +247,7 @@ export default function CallPage() {
           callPhaseRef.current === "connecting" ||
           callPhaseRef.current === "calling" ||
           callPhaseRef.current === "requesting-media" ||
-          showIncomingModal;
+          showIncomingModalRef.current;
 
         if (busy) {
           await sendSignal("end-call", {
@@ -240,12 +257,15 @@ export default function CallPage() {
           return;
         }
 
+        cleanupCall();
+
         const offer: IncomingOffer = {
           from: payload.from,
           to: payload.to,
           sdp: payload.sdp,
         };
 
+        pendingCandidatesRef.current = [];
         setIncomingOffer(offer);
         setIncomingFrom(payload.from);
         setActiveRemoteNumber(payload.from);
@@ -256,23 +276,26 @@ export default function CallPage() {
       })
       .on("broadcast", { event: "answer" }, async ({ payload }) => {
         const mine = myNumberRef.current;
+        const peer = peerRef.current;
+
         if (!payload?.to || payload.to !== mine) return;
-        if (!peerRef.current) return;
-        if (peerRef.current.signalingState === "closed") return;
+        if (!payload?.sdp) return;
+        if (!peer) return;
+        if (peer.connectionState === "closed") return;
 
         try {
-          await peerRef.current.setRemoteDescription(
-            new RTCSessionDescription(payload.sdp)
-          );
+          if (peer.signalingState !== "have-local-offer") return;
 
-          for (const c of pendingCandidatesRef.current) {
-  try {
-    await peerRef.current.addIceCandidate(new RTCIceCandidate(c));
-  } catch (error) {
-    console.error("pending ice add failed", error);
-  }
-}
-pendingCandidatesRef.current = [];
+          await peer.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+
+          for (const candidate of pendingCandidatesRef.current) {
+            try {
+              await peer.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (error) {
+              console.error("pending ice add failed", error);
+            }
+          }
+          pendingCandidatesRef.current = [];
 
           stopRingtone();
           setCallPhase("connecting");
@@ -282,20 +305,23 @@ pendingCandidatesRef.current = [];
           stopRingtone();
           setCallPhase("failed");
           setCallStatus("Answer failed");
+          cleanupCall();
+          setShowCallScreen(false);
+          setActiveRemoteNumber("");
         }
       })
       .on("broadcast", { event: "ice-candidate" }, async ({ payload }) => {
         const mine = myNumberRef.current;
+        const peer = peerRef.current;
+
         if (!payload?.to || payload.to !== mine) return;
         if (!payload?.candidate) return;
-        if (!peerRef.current) return;
-        if (peerRef.current.signalingState === "closed") return;
+        if (!peer) return;
+        if (peer.connectionState === "closed") return;
 
         try {
-          if (peerRef.current.remoteDescription) {
-            await peerRef.current.addIceCandidate(
-              new RTCIceCandidate(payload.candidate)
-            );
+          if (peer.remoteDescription) {
+            await peer.addIceCandidate(new RTCIceCandidate(payload.candidate));
           } else {
             pendingCandidatesRef.current.push(payload.candidate);
           }
@@ -309,8 +335,8 @@ pendingCandidatesRef.current = [];
 
         stopRingtone();
 
-        if (!callConnectedRef.current && activeRemoteNumber) {
-          addRecent(activeRemoteNumber, "missed");
+        if (!callConnectedRef.current && activeRemoteNumberRef.current) {
+          addRecent(activeRemoteNumberRef.current, "missed");
         }
 
         cleanupCall();
@@ -338,7 +364,7 @@ pendingCandidatesRef.current = [];
       stopRingtone();
       cleanupCall();
     };
-  }, [activeRemoteNumber, showIncomingModal]);
+  }, []);
 
   useEffect(() => {
     if (!showCallScreen || callPhase !== "in-call") return;
@@ -357,8 +383,8 @@ pendingCandidatesRef.current = [];
 
   useEffect(() => {
     if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach((track) => {
-        track.enabled = !muted;
+      localStreamRef.current.getAudioTracks().forEach((audioTrack) => {
+        audioTrack.enabled = !muted;
       });
     }
   }, [muted]);
@@ -408,8 +434,9 @@ pendingCandidatesRef.current = [];
     const suffix = linkedNumber?.number || linkedNumber?.suffix_7 || "";
 
     if (suffix) {
-      setOwnedSuffix(String(suffix).replace(/\D/g, "").slice(-7));
-      setMyNumber(`${PHONE_PREFIX}${String(suffix).replace(/\D/g, "").slice(-7)}`);
+      const cleanSuffix = String(suffix).replace(/\D/g, "").slice(-7);
+      setOwnedSuffix(cleanSuffix);
+      setMyNumber(`${PHONE_PREFIX}${cleanSuffix}`);
       setCallStatus("Owned number bound successfully");
     } else {
       setOwnedSuffix("");
@@ -441,41 +468,51 @@ pendingCandidatesRef.current = [];
     setRecents((prev) => [item, ...prev]);
   }
 
+  function clearCallTimeout() {
+    if (callTimeoutRef.current) {
+      window.clearTimeout(callTimeoutRef.current);
+      callTimeoutRef.current = null;
+    }
+  }
+
   function cleanupCall() {
+    clearCallTimeout();
+
     if (timerRef.current) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
     }
 
-    if (callTimeoutRef.current) {
-      window.clearTimeout(callTimeoutRef.current);
-      callTimeoutRef.current = null;
-    }
-
-    if (peerRef.current) {
-      peerRef.current.onicecandidate = null;
-      peerRef.current.ontrack = null;
-      peerRef.current.onconnectionstatechange = null;
+    const currentPeer = peerRef.current;
+    if (currentPeer) {
+      currentPeer.onicecandidate = null;
+      currentPeer.ontrack = null;
+      currentPeer.onconnectionstatechange = null;
+      currentPeer.oniceconnectionstatechange = null;
       try {
-        if (peerRef.current.signalingState !== "closed") {
-          peerRef.current.close();
-        }
+        currentPeer.close();
       } catch {}
       peerRef.current = null;
     }
 
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current.getTracks().forEach((mediaTrack) => mediaTrack.stop());
       localStreamRef.current = null;
     }
 
     if (remoteStreamRef.current) {
-      remoteStreamRef.current.getTracks().forEach((track) => track.stop());
+      remoteStreamRef.current.getTracks().forEach((mediaTrack) => mediaTrack.stop());
       remoteStreamRef.current = null;
     }
 
-    if (localAudioRef.current) localAudioRef.current.srcObject = null;
-    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    if (localAudioRef.current) {
+      localAudioRef.current.srcObject = null;
+    }
+
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.pause();
+      remoteAudioRef.current.srcObject = null;
+    }
 
     pendingCandidatesRef.current = [];
     callConnectedRef.current = false;
@@ -570,7 +607,7 @@ pendingCandidatesRef.current = [];
 
   async function sendSignal(
     event: "offer" | "answer" | "ice-candidate" | "end-call",
-    payload: any
+    payload: Record<string, unknown>
   ) {
     if (!channelRef.current) return;
 
@@ -585,38 +622,70 @@ pendingCandidatesRef.current = [];
     }
   }
 
-  async function buildPeerConnection(remoteNumber: string) {
-    cleanupCall();
+  async function ensureMediaStream() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    localStreamRef.current = stream;
 
+    if (localAudioRef.current) {
+      localAudioRef.current.srcObject = stream;
+      localAudioRef.current.muted = true;
+    }
+
+    return stream;
+  }
+
+  async function attachRemoteAudio(stream: MediaStream) {
+    if (!remoteAudioRef.current) return;
+    remoteAudioRef.current.srcObject = stream;
+    remoteAudioRef.current.autoplay = true;
+    try {
+      await remoteAudioRef.current.play();
+    } catch (error) {
+      console.error("remote audio play blocked", error);
+    }
+  }
+
+  async function buildPeerConnection(remoteNumber: string) {
     const peer = new RTCPeerConnection(RTC_CONFIG);
     const remoteStream = new MediaStream();
 
-    setActiveRemoteNumber(remoteNumber);
     peerRef.current = peer;
     remoteStreamRef.current = remoteStream;
+    pendingCandidatesRef.current = [];
+
+    const stream = await ensureMediaStream();
+
+    stream.getTracks().forEach((mediaTrack) => {
+      try {
+        peer.addTrack(mediaTrack, stream);
+      } catch (error) {
+        console.error("addTrack failed", error);
+      }
+    });
 
     peer.ontrack = (event) => {
       const incomingStream = event.streams?.[0];
-      if (!incomingStream) return;
+      if (incomingStream) {
+        incomingStream.getTracks().forEach((mediaTrack) => {
+          const exists = remoteStream
+            .getTracks()
+            .some((existingTrack) => existingTrack.id === mediaTrack.id);
 
-      incomingStream.getTracks().forEach((track) => {
-        const exists = remoteStream
-          .getTracks()
-          .some((existingTrack) => existingTrack.id === track.id);
-
-        if (!exists) {
-          remoteStream.addTrack(track);
-        }
-      });
-
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = remoteStream;
-        void remoteAudioRef.current.play().catch(() => {});
+          if (!exists) {
+            remoteStream.addTrack(mediaTrack);
+          }
+        });
+      } else {
+        event.track && remoteStream.addTrack(event.track);
       }
+
+      void attachRemoteAudio(remoteStream);
     };
 
     peer.onicecandidate = async (event) => {
       if (!event.candidate) return;
+      if (!peerRef.current || peerRef.current !== peer) return;
+      if (peer.connectionState === "closed") return;
 
       await sendSignal("ice-candidate", {
         from: myNumberRef.current,
@@ -631,47 +700,35 @@ pendingCandidatesRef.current = [];
       if (state === "connected") {
         callConnectedRef.current = true;
         stopRingtone();
-
-        if (callTimeoutRef.current) {
-          window.clearTimeout(callTimeoutRef.current);
-          callTimeoutRef.current = null;
-        }
-
+        clearCallTimeout();
         setCallPhase("in-call");
         setCallStatus("Connected");
       } else if (state === "connecting") {
         setCallPhase("connecting");
         setCallStatus("Connecting...");
-      } else if (state === "failed" || state === "disconnected") {
+      } else if (state === "failed") {
         stopRingtone();
-
-        if (callTimeoutRef.current) {
-          window.clearTimeout(callTimeoutRef.current);
-          callTimeoutRef.current = null;
-        }
-
+        clearCallTimeout();
         setCallPhase("failed");
         setCallStatus("Call failed");
+      } else if (state === "disconnected") {
+        stopRingtone();
+        clearCallTimeout();
+        setCallPhase("failed");
+        setCallStatus("Call disconnected");
       } else if (state === "closed") {
         stopRingtone();
       }
     };
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    localStreamRef.current = stream;
-
-  stream.getTracks().forEach((track) => {
-  try {
-    peer.addTrack(track, stream);
-  } catch (error) {
-    console.error("addTrack failed", error);
-  }
-});
-
-    if (localAudioRef.current) {
-      localAudioRef.current.srcObject = stream;
-      localAudioRef.current.muted = true;
-    }
+    peer.oniceconnectionstatechange = () => {
+      if (peer.iceConnectionState === "failed") {
+        stopRingtone();
+        clearCallTimeout();
+        setCallPhase("failed");
+        setCallStatus("ICE connection failed");
+      }
+    };
 
     return peer;
   }
@@ -717,18 +774,37 @@ pendingCandidatesRef.current = [];
         return;
       }
 
+      sessionIdRef.current += 1;
+      const currentSessionId = sessionIdRef.current;
+
       stopRingtone();
       cleanupCall();
+
+      setIncomingOffer(null);
+      setIncomingFrom("");
+      setShowIncomingModal(false);
+      setActiveRemoteNumber(targetNumber);
       setShowCallScreen(true);
       setCallPhase("requesting-media");
       setCallStatus("Requesting microphone...");
 
       const peer = await buildPeerConnection(targetNumber);
+      if (sessionIdRef.current !== currentSessionId) return;
+      if (!peerRef.current || peerRef.current !== peer) return;
+      if (peer.connectionState === "closed") {
+        throw new Error("Peer connection already closed");
+      }
 
       setCallPhase("calling");
       setCallStatus("Creating offer...");
 
-      const offer = await peer.createOffer();
+      const offer = await peer.createOffer({
+        offerToReceiveAudio: true,
+      });
+      if (sessionIdRef.current !== currentSessionId) return;
+      if (!peerRef.current || peerRef.current !== peer) {
+  throw new Error("Peer connection already closed");
+}
       await peer.setLocalDescription(offer);
 
       addRecent(targetNumber, "outgoing");
@@ -739,7 +815,6 @@ pendingCandidatesRef.current = [];
         sdp: offer,
       });
 
-      setActiveRemoteNumber(targetNumber);
       setCallStatus("Calling...");
       startRingtone("outgoing");
 
@@ -774,51 +849,57 @@ pendingCandidatesRef.current = [];
   }
 
   async function acceptIncomingCall() {
-    if (!incomingOffer) return;
+    const currentIncomingOffer = incomingOfferRef.current;
+    if (!currentIncomingOffer) return;
 
     try {
-      if (callTimeoutRef.current) {
-        window.clearTimeout(callTimeoutRef.current);
-        callTimeoutRef.current = null;
-      }
+      sessionIdRef.current += 1;
+      const currentSessionId = sessionIdRef.current;
 
+      clearCallTimeout();
       stopRingtone();
+      cleanupCall();
+
       setShowIncomingModal(false);
       setShowCallScreen(true);
+      setActiveRemoteNumber(currentIncomingOffer.from);
       setCallPhase("requesting-media");
-      setCallStatus("Preparing answer...");
+      setCallStatus("Requesting microphone...");
 
-      const peer = await buildPeerConnection(incomingOffer.from);
-
-      if (peer.signalingState === "closed") {
+      const peer = await buildPeerConnection(currentIncomingOffer.from);
+      if (sessionIdRef.current !== currentSessionId) return;
+      if (!peerRef.current || peerRef.current !== peer) return;
+      if (peer.connectionState === "closed") {
         throw new Error("Peer connection already closed");
       }
 
       await peer.setRemoteDescription(
-        new RTCSessionDescription(incomingOffer.sdp)
+        new RTCSessionDescription(currentIncomingOffer.sdp)
       );
 
-     for (const c of pendingCandidatesRef.current) {
-  try {
-    await peer.addIceCandidate(new RTCIceCandidate(c));
-  } catch (error) {
-    console.error("pending ice add failed", error);
-  }
-}
-pendingCandidatesRef.current = [];
+      for (const candidate of pendingCandidatesRef.current) {
+        try {
+          await peer.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (error) {
+          console.error("pending ice add failed", error);
+        }
+      }
+      pendingCandidatesRef.current = [];
 
       const answer = await peer.createAnswer();
+      if (!peerRef.current || peerRef.current !== peer) {
+  throw new Error("Peer connection already closed");
+}
       await peer.setLocalDescription(answer);
 
-      addRecent(incomingOffer.from, "incoming");
+      addRecent(currentIncomingOffer.from, "incoming");
 
       await sendSignal("answer", {
         from: myNumberRef.current,
-        to: incomingOffer.from,
+        to: currentIncomingOffer.from,
         sdp: answer,
       });
 
-      setActiveRemoteNumber(incomingOffer.from);
       setCallPhase("connecting");
       setCallStatus("Answer sent. Connecting...");
       setIncomingOffer(null);
@@ -833,25 +914,25 @@ pendingCandidatesRef.current = [];
         error instanceof Error ? error.message : "Failed to answer"
       );
       setActiveRemoteNumber("");
+      setIncomingOffer(null);
+      setIncomingFrom("");
     }
   }
 
   async function rejectIncomingCall() {
     stopRingtone();
+    clearCallTimeout();
 
-    if (callTimeoutRef.current) {
-      window.clearTimeout(callTimeoutRef.current);
-      callTimeoutRef.current = null;
-    }
-
-    if (incomingOffer) {
-      addRecent(incomingOffer.from, "missed");
+    const currentIncomingOffer = incomingOfferRef.current;
+    if (currentIncomingOffer) {
+      addRecent(currentIncomingOffer.from, "missed");
       await sendSignal("end-call", {
         from: myNumberRef.current,
-        to: incomingOffer.from,
+        to: currentIncomingOffer.from,
       });
     }
 
+    cleanupCall();
     setIncomingOffer(null);
     setIncomingFrom("");
     setShowIncomingModal(false);
@@ -862,13 +943,9 @@ pendingCandidatesRef.current = [];
 
   async function endCall() {
     stopRingtone();
+    clearCallTimeout();
 
-    if (callTimeoutRef.current) {
-      window.clearTimeout(callTimeoutRef.current);
-      callTimeoutRef.current = null;
-    }
-
-    const remote = activeRemoteNumber;
+    const remote = activeRemoteNumberRef.current || incomingOfferRef.current?.from || "";
 
     cleanupCall();
     setShowCallScreen(false);
@@ -1252,7 +1329,7 @@ pendingCandidatesRef.current = [];
   return (
     <main className="min-h-screen bg-[#dfe3e8] px-3 py-4">
       <audio ref={localAudioRef} autoPlay muted className="hidden" />
-      <audio ref={remoteAudioRef} autoPlay className="hidden" />
+      <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
       <div className="mx-auto max-w-[460px]">
         <div className="overflow-hidden rounded-[42px] border border-black/10 bg-[#f2f2f7] shadow-[0_30px_80px_rgba(0,0,0,0.22)]">
@@ -1269,9 +1346,6 @@ pendingCandidatesRef.current = [];
             <div className="mt-3 px-2">
               <div className="text-[28px] font-bold tracking-[-0.03em] text-[#111111]">
                 Taurus Call
-              </div>
-              <div className="mt-1 text-xs text-[#8e8e93]">
-                WebRTC + Supabase Realtime + TURN Ready
               </div>
             </div>
 
