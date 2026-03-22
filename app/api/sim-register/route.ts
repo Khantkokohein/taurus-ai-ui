@@ -127,6 +127,7 @@ export async function POST(req: Request) {
     const ownershipPayload = {
       user_id: null,
       number_id: selectedId,
+      number: selectedNumber,
       owner_name: form.full_name.trim(),
       owner_nrc: form.nrc.trim(),
       owner_note: null,
