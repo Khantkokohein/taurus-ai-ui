@@ -13,6 +13,7 @@ type SimItem = {
   type: SimType;
   isOnSale: boolean;
   salePrice: number | null;
+  isGiveaway: boolean;
   status: SimStatus;
   createdAt: string;
 };
@@ -36,6 +37,7 @@ type NumberRow = {
   price: number | null;
   is_on_sale: boolean | null;
   sale_price: number | null;
+  is_giveaway: boolean | null;
 };
 
 type OwnershipRow = {
@@ -45,11 +47,18 @@ type OwnershipRow = {
   owner_note: string | null;
   created_at: string | null;
   active: boolean | null;
-  numbers?: {
-    id: string;
-    number: string | null;
-    suffix_7: string | null;
-  } | null;
+  numbers?:
+    | {
+        id: string;
+        number: string | null;
+        suffix_7: string | null;
+      }
+    | {
+        id: string;
+        number: string | null;
+        suffix_7: string | null;
+      }[]
+    | null;
 };
 
 function formatPrice(value: number | null) {
@@ -113,6 +122,7 @@ function mapRowToSimItem(row: NumberRow): SimItem {
     type: mapTierToType(row.tier),
     isOnSale: Boolean(row.is_on_sale),
     salePrice: row.sale_price === null ? null : Number(row.sale_price),
+    isGiveaway: Boolean(row.is_giveaway),
     status: row.status === "sold" ? "sold" : "available",
     createdAt: row.created_at || new Date().toISOString(),
   };
@@ -124,6 +134,7 @@ export default function AdminPage() {
   const [type, setType] = useState<SimType>("normal");
   const [isOnSale, setIsOnSale] = useState(false);
   const [salePrice, setSalePrice] = useState("");
+  const [isGiveaway, setIsGiveaway] = useState(false);
   const [status, setStatus] = useState<SimStatus>("available");
   const [list, setList] = useState<SimItem[]>([]);
   const [search, setSearch] = useState("");
@@ -147,7 +158,7 @@ export default function AdminPage() {
     const { data, error } = await supabase
       .from("numbers")
       .select(
-        "id, number, suffix_7, tier, status, created_at, price, is_on_sale, sale_price"
+        "id, number, suffix_7, tier, status, created_at, price, is_on_sale, sale_price, is_giveaway"
       )
       .order("created_at", { ascending: false });
 
@@ -187,16 +198,22 @@ export default function AdminPage() {
       return;
     }
 
-  const mapped: OwnerClaim[] = ((data || []) as unknown as OwnershipRow[])
+    const mapped: OwnerClaim[] = ((data || []) as unknown as OwnershipRow[])
       .filter((item) => item.number_id)
-      .map((item) => ({
-        id: item.id,
-        numberId: item.number_id || "",
-        number: item.numbers?.number || item.numbers?.suffix_7 || "",
-        ownerName: item.owner_name || "Owner",
-        ownerNote: item.owner_note || "",
-        claimedAt: item.created_at || new Date().toISOString(),
-      }));
+      .map((item) => {
+        const linkedNumber = Array.isArray(item.numbers)
+          ? item.numbers[0]
+          : item.numbers;
+
+        return {
+          id: item.id,
+          numberId: item.number_id || "",
+          number: linkedNumber?.number || linkedNumber?.suffix_7 || "",
+          ownerName: item.owner_name || "Owner",
+          ownerNote: item.owner_note || "",
+          claimedAt: item.created_at || new Date().toISOString(),
+        };
+      });
 
     setClaims(mapped);
   };
@@ -221,9 +238,11 @@ export default function AdminPage() {
     }
 
     const finalSalePrice =
-      isOnSale && salePrice.trim() ? Number(salePrice.trim()) : null;
+      !isGiveaway && isOnSale && salePrice.trim()
+        ? Number(salePrice.trim())
+        : null;
 
-    if (isOnSale) {
+    if (!isGiveaway && isOnSale) {
       if (!finalSalePrice || finalSalePrice <= 0) {
         alert("Please enter a valid sale price.");
         return;
@@ -242,8 +261,9 @@ export default function AdminPage() {
         tier: type,
         status,
         price,
-        is_on_sale: isOnSale,
-        sale_price: finalSalePrice,
+        is_on_sale: isGiveaway ? false : isOnSale,
+        sale_price: isGiveaway ? null : finalSalePrice,
+        is_giveaway: isGiveaway,
       },
     ]);
 
@@ -257,6 +277,7 @@ export default function AdminPage() {
     setType("normal");
     setIsOnSale(false);
     setSalePrice("");
+    setIsGiveaway(false);
     setStatus("available");
 
     await loadNumbers();
@@ -401,6 +422,12 @@ export default function AdminPage() {
     return map;
   }, [claims]);
 
+  const previewPrimaryText = isGiveaway
+    ? "FREE"
+    : isOnSale && salePrice
+    ? `${Number(salePrice).toLocaleString()} TAT`
+    : `${price.toLocaleString()} TAT`;
+
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#05081f] text-white">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(56,189,248,0.16),transparent_24%),radial-gradient(circle_at_80%_15%,rgba(168,85,247,0.18),transparent_22%),linear-gradient(135deg,#040817_0%,#070b2d_45%,#030617_100%)]" />
@@ -516,7 +543,8 @@ export default function AdminPage() {
                     type="number"
                     value={price}
                     onChange={(e) => setPrice(Number(e.target.value))}
-                    className="w-full rounded-2xl border border-white/10 bg-[#0b1228] px-4 py-3 text-white outline-none transition focus:border-cyan-400/40"
+                    disabled={isGiveaway}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0b1228] px-4 py-3 text-white outline-none transition disabled:cursor-not-allowed disabled:opacity-50 focus:border-cyan-400/40"
                   />
                 </div>
 
@@ -550,7 +578,13 @@ export default function AdminPage() {
 
                     <button
                       type="button"
-                      onClick={() => setIsOnSale((prev) => !prev)}
+                      onClick={() => {
+                        const next = !isOnSale;
+                        setIsOnSale(next);
+                        if (next) {
+                          setIsGiveaway(false);
+                        }
+                      }}
                       className={`relative h-8 w-16 rounded-full transition ${
                         isOnSale ? "bg-green-500/80" : "bg-white/10"
                       }`}
@@ -563,7 +597,7 @@ export default function AdminPage() {
                     </button>
                   </div>
 
-                  {isOnSale && (
+                  {isOnSale && !isGiveaway && (
                     <div className="mt-4">
                       <label className="mb-2 block text-sm font-medium text-green-200">
                         Sale Price
@@ -593,6 +627,40 @@ export default function AdminPage() {
                   </select>
 
                   <div className="mt-4">{getStatusBadge(status)}</div>
+
+                  <div className="mt-4 border-t border-white/10 pt-4">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-medium text-white">
+                          Giveaway Mode
+                        </div>
+                        <div className="mt-1 text-xs text-white/50">
+                          Mark this SIM as free giveaway.
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !isGiveaway;
+                          setIsGiveaway(next);
+                          if (next) {
+                            setIsOnSale(false);
+                            setSalePrice("");
+                          }
+                        }}
+                        className={`relative h-8 w-16 rounded-full transition ${
+                          isGiveaway ? "bg-yellow-500/80" : "bg-white/10"
+                        }`}
+                      >
+                        <span
+                          className={`absolute top-1 h-6 w-6 rounded-full bg-white transition ${
+                            isGiveaway ? "left-9" : "left-1"
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -605,6 +673,11 @@ export default function AdminPage() {
                   <div className="mb-3 flex items-center gap-2">
                     {getTypeBadge(type)}
                     {getStatusBadge(status)}
+                    {isGiveaway && (
+                      <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-xs font-medium text-yellow-300">
+                        GIVEAWAY
+                      </span>
+                    )}
                   </div>
 
                   <div className="text-lg font-semibold text-white">
@@ -616,7 +689,16 @@ export default function AdminPage() {
                   </div>
 
                   <div className="mt-4">
-                    {isOnSale && salePrice ? (
+                    {isGiveaway ? (
+                      <div className="flex items-center gap-3">
+                        <span className="text-lg font-bold text-yellow-300">
+                          FREE
+                        </span>
+                        <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-xs font-medium text-yellow-300">
+                          GIVEAWAY
+                        </span>
+                      </div>
+                    ) : isOnSale && salePrice ? (
                       <div className="flex items-center gap-3">
                         <span className="text-sm text-white/35 line-through">
                           {price.toLocaleString()} TAT
@@ -630,7 +712,7 @@ export default function AdminPage() {
                       </div>
                     ) : (
                       <div className="text-lg font-bold text-cyan-300">
-                        {price.toLocaleString()} TAT
+                        {previewPrimaryText}
                       </div>
                     )}
                   </div>
@@ -686,6 +768,11 @@ export default function AdminPage() {
                               Sale
                             </span>
                           )}
+                          {item.isGiveaway && (
+                            <span className="inline-flex rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2.5 py-1 text-xs font-medium text-yellow-300">
+                              Giveaway
+                            </span>
+                          )}
                         </div>
 
                         <button
@@ -701,10 +788,14 @@ export default function AdminPage() {
                       </div>
 
                       <div className="mt-3 space-y-1 text-sm text-white/60">
-                        <div>Main Price: {formatPrice(item.price)}</div>
+                        <div>
+                          Main Price: {item.isGiveaway ? "FREE" : formatPrice(item.price)}
+                        </div>
                         <div>
                           Sale Price:{" "}
-                          {item.isOnSale
+                          {item.isGiveaway
+                            ? "Giveaway"
+                            : item.isOnSale
                             ? formatPrice(item.salePrice)
                             : "Not on sale"}
                         </div>
@@ -739,7 +830,16 @@ export default function AdminPage() {
                       )}
 
                       <div className="mt-4">
-                        {item.isOnSale && item.salePrice ? (
+                        {item.isGiveaway ? (
+                          <div className="flex items-center gap-3">
+                            <span className="text-lg font-bold text-yellow-300">
+                              FREE
+                            </span>
+                            <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-xs font-medium text-yellow-300">
+                              GIVEAWAY
+                            </span>
+                          </div>
+                        ) : item.isOnSale && item.salePrice ? (
                           <div className="flex items-center gap-3">
                             <span className="text-sm text-white/35 line-through">
                               {item.price.toLocaleString()} TAT
@@ -800,12 +900,14 @@ export default function AdminPage() {
               </div>
               <div className="mt-2 text-sm text-cyan-300">
                 Price:{" "}
-                {(
-                  selectedItem.isOnSale && selectedItem.salePrice
-                    ? selectedItem.salePrice
-                    : selectedItem.price
-                ).toLocaleString()}{" "}
-                TAT
+                {selectedItem.isGiveaway
+                  ? "FREE"
+                  : (
+                      selectedItem.isOnSale && selectedItem.salePrice
+                        ? selectedItem.salePrice
+                        : selectedItem.price
+                    ).toLocaleString()}{" "}
+                {!selectedItem.isGiveaway ? "TAT" : ""}
               </div>
             </div>
 
