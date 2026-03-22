@@ -81,11 +81,11 @@ export default function SimStorePage() {
   }, []);
 
   async function boot() {
-    const id = await initDevice();
+    const id = initDevice();
     await Promise.all([loadNumbers(), loadOwnedNumbers(id)]);
   }
 
-  async function initDevice() {
+  function initDevice() {
     let id = localStorage.getItem("device_id");
 
     if (!id) {
@@ -306,7 +306,7 @@ export default function SimStorePage() {
     });
 
     if (error) {
-      throw new Error(error.message);
+      throw new Error(`${bucket} upload failed: ${error.message}`);
     }
 
     const { data } = supabase.storage.from(bucket).getPublicUrl(filename);
@@ -323,51 +323,41 @@ export default function SimStorePage() {
     setLoading(true);
 
     try {
+      const currentDeviceId = deviceId || initDevice();
+
       const { data: existingOwnership, error: ownershipCheckError } = await supabase
         .from("ownership")
-        .select("id, number, device_id")
-        .eq("device_id", deviceId)
+        .select("id")
+        .eq("device_id", currentDeviceId)
         .eq("active", true)
         .limit(1);
 
       if (ownershipCheckError) {
-        throw new Error(ownershipCheckError.message);
+        throw new Error(`Ownership check failed: ${ownershipCheckError.message}`);
       }
 
       if (existingOwnership && existingOwnership.length > 0) {
-        alert("❌ This device already owns a SIM");
-        setLoading(false);
-        return;
+        throw new Error("This device already owns a SIM");
       }
 
       const { data: currentNumber, error: numberCheckError } = await supabase
         .from("numbers")
-        .select("id, status")
+        .select("id, status, number")
         .eq("id", selected.id)
         .single();
 
       if (numberCheckError) {
-        throw new Error(numberCheckError.message);
+        throw new Error(`Number check failed: ${numberCheckError.message}`);
       }
 
       if (!currentNumber || currentNumber.status !== "available") {
-        alert("❌ This SIM is no longer available");
-        setLoading(false);
         await loadNumbers();
-        return;
+        throw new Error("This SIM is no longer available");
       }
 
       const selfieUrl = await uploadImage(selfieFile!, "sim-selfies", "selfies");
-      const nrcFrontUrl = await uploadImage(
-        nrcFrontFile!,
-        "sim-nrc",
-        "nrc-front"
-      );
-      const nrcBackUrl = await uploadImage(
-        nrcBackFile!,
-        "sim-nrc",
-        "nrc-back"
-      );
+      const nrcFrontUrl = await uploadImage(nrcFrontFile!, "sim-nrc", "nrc-front");
+      const nrcBackUrl = await uploadImage(nrcBackFile!, "sim-nrc", "nrc-back");
 
       const registrationPayload = {
         number: selected.number,
@@ -377,7 +367,7 @@ export default function SimStorePage() {
         address: form.address.trim(),
         father_name: form.father_name.trim(),
         job: form.job.trim(),
-        device_id: deviceId,
+        device_id: currentDeviceId,
         selfie_url: selfieUrl,
         nrc_front_url: nrcFrontUrl,
         nrc_back_url: nrcBackUrl,
@@ -386,26 +376,32 @@ export default function SimStorePage() {
 
       const { data: registrationInsert, error: registrationError } = await supabase
         .from("sim_registrations")
-        .insert(registrationPayload)
+        .insert([registrationPayload])
         .select("id")
         .single();
 
       if (registrationError) {
-        throw new Error(registrationError.message);
+        throw new Error(`Registration save failed: ${registrationError.message}`);
       }
 
-      const { error: ownershipError } = await supabase.from("ownership").insert({
+      const ownershipPayload = {
+        user_id: null,
         number_id: selected.id,
         number: selected.number,
         owner_name: form.full_name.trim(),
         owner_nrc: form.nrc.trim(),
-        device_id: deviceId,
-        registration_id: registrationInsert?.id ?? null,
+        owner_note: null,
+        device_id: currentDeviceId,
+        registration_id: registrationInsert.id,
         active: true,
-      });
+      };
+
+      const { error: ownershipError } = await supabase
+        .from("ownership")
+        .insert([ownershipPayload]);
 
       if (ownershipError) {
-        throw new Error(ownershipError.message);
+        throw new Error(`Ownership save failed: ${ownershipError.message}`);
       }
 
       const { error: updateNumberError } = await supabase
@@ -414,14 +410,14 @@ export default function SimStorePage() {
         .eq("id", selected.id);
 
       if (updateNumberError) {
-        throw new Error(updateNumberError.message);
+        throw new Error(`Number update failed: ${updateNumberError.message}`);
       }
 
       alert("✅ SIM Ownership Activated Successfully");
       resetFormState();
-      await Promise.all([loadNumbers(), loadOwnedNumbers()]);
+      await Promise.all([loadNumbers(), loadOwnedNumbers(currentDeviceId)]);
     } catch (error) {
-      console.error(error);
+      console.error("SIM register error:", error);
       alert(
         error instanceof Error
           ? `❌ ${error.message}`
@@ -549,22 +545,16 @@ export default function SimStorePage() {
                       {n.status === "sold" ? (
                         <span className="font-semibold text-red-300">● Owned</span>
                       ) : (
-                        <span className="font-semibold text-green-300">
-                          ● Available
-                        </span>
+                        <span className="font-semibold text-green-300">● Available</span>
                       )}
                     </div>
-                    <div className="text-xs text-white/45">
-                      1 Device = 1 SIM
-                    </div>
+                    <div className="text-xs text-white/45">1 Device = 1 SIM</div>
                   </div>
 
                   <div className="mb-5">
                     {n.is_giveaway ? (
                       <div className="flex items-center gap-2">
-                        <span className="text-lg font-bold text-yellow-300">
-                          FREE
-                        </span>
+                        <span className="text-lg font-bold text-yellow-300">FREE</span>
                         <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-[10px] font-medium text-yellow-300">
                           GIVEAWAY
                         </span>
@@ -623,9 +613,7 @@ export default function SimStorePage() {
 
                   <div className="mt-3 flex items-center justify-between">
                     <div className="text-sm">
-                      <span className="font-semibold text-green-300">
-                        ● Available
-                      </span>
+                      <span className="font-semibold text-green-300">● Available</span>
                     </div>
                     <div className="text-[10px] font-bold tracking-[0.16em] text-white/45">
                       {getBadge(n)}
@@ -635,9 +623,7 @@ export default function SimStorePage() {
                   <div className="mt-4">
                     {n.is_giveaway ? (
                       <div className="flex items-center gap-2">
-                        <span className="text-lg font-bold text-yellow-300">
-                          FREE
-                        </span>
+                        <span className="text-lg font-bold text-yellow-300">FREE</span>
                         <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-2 py-1 text-[10px] font-medium text-yellow-300">
                           GIVEAWAY
                         </span>
@@ -688,9 +674,7 @@ export default function SimStorePage() {
                   <div className="mt-2 text-2xl font-black tracking-[0.14em] text-white/80">
                     +70 20 {n.number}
                   </div>
-                  <div className="mt-3 text-sm font-semibold text-red-300">
-                    ● Owned
-                  </div>
+                  <div className="mt-3 text-sm font-semibold text-red-300">● Owned</div>
                 </div>
               ))}
             </div>
@@ -947,9 +931,7 @@ function UploadCard({
           />
         ) : (
           <div className="text-center">
-            <div className="mb-2 text-sm font-bold text-cyan-300">
-              Tap to Upload
-            </div>
+            <div className="mb-2 text-sm font-bold text-cyan-300">Tap to Upload</div>
             <div className="text-xs text-white/45">PNG, JPG, JPEG under 5MB</div>
           </div>
         )}
