@@ -97,7 +97,10 @@ function safeJsonParse<T>(value: string | null, fallback: T): T {
 }
 
 function getNowTimeLabel() {
-  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function getSuffix(value: string) {
@@ -152,6 +155,7 @@ export default function CallPage() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
+  const callTimeoutRef = useRef<number | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const currentRemoteRef = useRef<string>("");
   const callConnectedRef = useRef(false);
@@ -197,7 +201,13 @@ export default function CallPage() {
       .on("broadcast", { event: "offer" }, ({ payload }) => {
         if (!payload?.to || payload.to !== myNumber) return;
         if (!isValidTaurusNumber(myNumber)) return;
-        if (callPhase === "in-call" || callPhase === "connecting" || callPhase === "calling") {
+
+        if (
+          callPhase === "in-call" ||
+          callPhase === "connecting" ||
+          callPhase === "calling" ||
+          callPhase === "requesting-media"
+        ) {
           void sendSignal("end-call", {
             from: myNumber,
             to: payload.from,
@@ -224,7 +234,9 @@ export default function CallPage() {
         if (!peerRef.current) return;
 
         try {
-          await peerRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          await peerRef.current.setRemoteDescription(
+            new RTCSessionDescription(payload.sdp)
+          );
 
           for (const c of pendingCandidatesRef.current) {
             await peerRef.current.addIceCandidate(new RTCIceCandidate(c));
@@ -249,7 +261,9 @@ export default function CallPage() {
           if (!peerRef.current) return;
 
           if (peerRef.current.remoteDescription) {
-            await peerRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate));
+            await peerRef.current.addIceCandidate(
+              new RTCIceCandidate(payload.candidate)
+            );
           } else {
             pendingCandidatesRef.current.push(payload.candidate);
           }
@@ -378,6 +392,11 @@ export default function CallPage() {
       timerRef.current = null;
     }
 
+    if (callTimeoutRef.current) {
+      window.clearTimeout(callTimeoutRef.current);
+      callTimeoutRef.current = null;
+    }
+
     if (peerRef.current) {
       peerRef.current.onicecandidate = null;
       peerRef.current.ontrack = null;
@@ -408,7 +427,9 @@ export default function CallPage() {
   function getAudioContext() {
     const AudioContextCtor =
       window.AudioContext ||
-      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      (window as typeof window & {
+        webkitAudioContext?: typeof AudioContext;
+      }).webkitAudioContext;
 
     if (!AudioContextCtor) return null;
 
@@ -537,6 +558,12 @@ export default function CallPage() {
       if (state === "connected") {
         callConnectedRef.current = true;
         stopRingtone();
+
+        if (callTimeoutRef.current) {
+          window.clearTimeout(callTimeoutRef.current);
+          callTimeoutRef.current = null;
+        }
+
         setCallPhase("in-call");
         setCallStatus("Connected");
       } else if (state === "connecting") {
@@ -544,6 +571,12 @@ export default function CallPage() {
         setCallStatus("Connecting...");
       } else if (state === "failed" || state === "disconnected") {
         stopRingtone();
+
+        if (callTimeoutRef.current) {
+          window.clearTimeout(callTimeoutRef.current);
+          callTimeoutRef.current = null;
+        }
+
         setCallPhase("failed");
         setCallStatus("Call failed");
       }
@@ -630,6 +663,22 @@ export default function CallPage() {
       currentRemoteRef.current = targetNumber;
       setCallStatus("Calling...");
       startRingtone("outgoing");
+
+      callTimeoutRef.current = window.setTimeout(async () => {
+        if (!callConnectedRef.current) {
+          stopRingtone();
+          cleanupCall();
+          setShowCallScreen(false);
+          setCallPhase("ended");
+          setCallStatus("No answer (timeout)");
+          addRecent(targetNumber, "missed");
+
+          await sendSignal("end-call", {
+            from: myNumber,
+            to: targetNumber,
+          });
+        }
+      }, 20000);
     } catch (error) {
       console.error("place call failed", error);
       stopRingtone();
@@ -646,6 +695,11 @@ export default function CallPage() {
     if (!incomingOffer) return;
 
     try {
+      if (callTimeoutRef.current) {
+        window.clearTimeout(callTimeoutRef.current);
+        callTimeoutRef.current = null;
+      }
+
       stopRingtone();
       setShowIncomingModal(false);
       setShowCallScreen(true);
@@ -654,7 +708,9 @@ export default function CallPage() {
 
       const peer = await buildPeerConnection(incomingOffer.from);
 
-      await peer.setRemoteDescription(new RTCSessionDescription(incomingOffer.sdp));
+      await peer.setRemoteDescription(
+        new RTCSessionDescription(incomingOffer.sdp)
+      );
 
       for (const c of pendingCandidatesRef.current) {
         await peer.addIceCandidate(new RTCIceCandidate(c));
@@ -690,6 +746,11 @@ export default function CallPage() {
   async function rejectIncomingCall() {
     stopRingtone();
 
+    if (callTimeoutRef.current) {
+      window.clearTimeout(callTimeoutRef.current);
+      callTimeoutRef.current = null;
+    }
+
     if (incomingOffer) {
       addRecent(incomingOffer.from, "missed");
       await sendSignal("end-call", {
@@ -707,6 +768,12 @@ export default function CallPage() {
 
   async function endCall() {
     stopRingtone();
+
+    if (callTimeoutRef.current) {
+      window.clearTimeout(callTimeoutRef.current);
+      callTimeoutRef.current = null;
+    }
+
     const remote = currentRemoteRef.current;
 
     cleanupCall();
@@ -845,7 +912,9 @@ export default function CallPage() {
               {contact.avatar}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-base font-semibold text-[#111111]">{contact.name}</div>
+              <div className="truncate text-base font-semibold text-[#111111]">
+                {contact.name}
+              </div>
               <div className="truncate text-sm text-[#8e8e93]">{contact.number}</div>
             </div>
             <div className="text-xl text-[#34c759]">📞</div>
@@ -1076,9 +1145,7 @@ export default function CallPage() {
     <div className="space-y-3">
       <div className="rounded-3xl bg-white px-4 py-4 shadow-sm">
         <div className="text-base font-semibold text-[#111111]">Voicemail</div>
-        <div className="mt-2 text-sm text-[#8e8e93]">
-          No voicemail yet.
-        </div>
+        <div className="mt-2 text-sm text-[#8e8e93]">No voicemail yet.</div>
       </div>
       <div className="rounded-3xl bg-white px-4 py-4 shadow-sm">
         <div className="text-sm text-[#8e8e93]">
