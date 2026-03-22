@@ -19,6 +19,7 @@ type SimItem = {
 
 type OwnerClaim = {
   id: string;
+  numberId: string;
   number: string;
   ownerName: string;
   ownerNote: string;
@@ -39,11 +40,16 @@ type NumberRow = {
 
 type OwnershipRow = {
   id: string;
-  number: string | null;
+  number_id: string | null;
   owner_name: string | null;
   owner_note: string | null;
   created_at: string | null;
   active: boolean | null;
+  numbers?: {
+    id: string;
+    number: string | null;
+    suffix_7: string | null;
+  } | null;
 };
 
 function formatPrice(value: number | null) {
@@ -86,10 +92,10 @@ function getStatusBadge(status: SimStatus) {
 
   return (
     <span className="inline-flex rounded-full border border-green-400/30 bg-green-400/10 px-2.5 py-1 text-xs font-medium text-green-300">
-        Available
-      </span>
-    );
-  }
+      Available
+    </span>
+  );
+}
 
 function mapTierToType(tier: string | null): SimType {
   const value = (tier || "").toLowerCase();
@@ -158,7 +164,21 @@ export default function AdminPage() {
   const loadClaims = async () => {
     const { data, error } = await supabase
       .from("ownership")
-      .select("id, number, owner_name, owner_note, created_at, active")
+      .select(
+        `
+        id,
+        number_id,
+        owner_name,
+        owner_note,
+        created_at,
+        active,
+        numbers:number_id (
+          id,
+          number,
+          suffix_7
+        )
+      `
+      )
       .eq("active", true)
       .order("created_at", { ascending: false });
 
@@ -167,11 +187,12 @@ export default function AdminPage() {
       return;
     }
 
-    const mapped: OwnerClaim[] = ((data || []) as OwnershipRow[])
-      .filter((item) => item.number)
+  const mapped: OwnerClaim[] = ((data || []) as unknown as OwnershipRow[])
+      .filter((item) => item.number_id)
       .map((item) => ({
         id: item.id,
-        number: item.number || "",
+        numberId: item.number_id || "",
+        number: item.numbers?.number || item.numbers?.suffix_7 || "",
         ownerName: item.owner_name || "Owner",
         ownerNote: item.owner_note || "",
         claimedAt: item.created_at || new Date().toISOString(),
@@ -241,7 +262,7 @@ export default function AdminPage() {
     await loadNumbers();
   };
 
-  const deleteNumber = async (id: string, simNumber: string) => {
+  const deleteNumber = async (id: string) => {
     const ok = window.confirm("Delete this number?");
     if (!ok) return;
 
@@ -252,7 +273,11 @@ export default function AdminPage() {
       return;
     }
 
-    await supabase.from("ownership").update({ active: false }).eq("number", simNumber);
+    await supabase
+      .from("ownership")
+      .update({ active: false })
+      .eq("number_id", id)
+      .eq("active", true);
 
     await loadAll();
   };
@@ -278,7 +303,7 @@ export default function AdminPage() {
       await supabase
         .from("ownership")
         .update({ active: false })
-        .eq("number", currentItem.number)
+        .eq("number_id", currentItem.id)
         .eq("active", true);
     }
 
@@ -325,18 +350,18 @@ export default function AdminPage() {
     await supabase
       .from("ownership")
       .update({ active: false })
-      .eq("number", selectedItem.number)
+      .eq("number_id", selectedItem.id)
       .eq("active", true);
 
     const { error: ownershipError } = await supabase.from("ownership").insert([
       {
-        number: selectedItem.number,
+        number_id: selectedItem.id,
+        user_id: null,
         owner_name: cleanOwnerName,
         owner_note: ownerNote.trim() || null,
-        owner_nrc: null,
+        active: true,
         device_id: null,
         registration_id: null,
-        active: true,
       },
     ]);
 
@@ -371,7 +396,7 @@ export default function AdminPage() {
   const claimMap = useMemo(() => {
     const map = new Map<string, OwnerClaim>();
     for (const item of claims) {
-      map.set(item.number, item);
+      map.set(item.numberId, item);
     }
     return map;
   }, [claims]);
@@ -645,7 +670,7 @@ export default function AdminPage() {
                 </div>
               ) : (
                 filteredList.map((item) => {
-                  const claim = claimMap.get(item.number);
+                  const claim = claimMap.get(item.id);
 
                   return (
                     <div
@@ -664,7 +689,7 @@ export default function AdminPage() {
                         </div>
 
                         <button
-                          onClick={() => deleteNumber(item.id, item.number)}
+                          onClick={() => deleteNumber(item.id)}
                           className="rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-1.5 text-xs font-medium text-red-300 transition hover:bg-red-400/15"
                         >
                           Delete
