@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { requestFCMToken, onForegroundMessage } from "../../lib/firebase";
 import { supabase } from "../../lib/client";
 
-type TabKey = "favorites" | "recents" | "contacts" | "keypad" | "voicemail";
+type TabKey = "favorites" | "recents" | "contacts" | "messages" | "keypad" | "voicemail";
 type CallPhase =
   | "idle"
   | "requesting-media"
@@ -29,6 +29,14 @@ type ContactItem = {
   number: string;
   avatar: string;
   isFavorite?: boolean;
+};
+
+type MessageItem = {
+  id: string;
+  sender: string;
+  receiver: string;
+  content: string;
+  created_at: string;
 };
 
 type IncomingOffer = {
@@ -178,6 +186,14 @@ export default function CallPage() {
   const [showAddContactModal, setShowAddContactModal] = useState(false);
   const [activeRemoteNumber, setActiveRemoteNumber] = useState("");
 
+  const [activeChatNumber, setActiveChatNumber] = useState("");
+  const [chatMessages, setChatMessages] = useState<MessageItem[]>([]);
+  const [messageInput, setMessageInput] = useState("");
+  const [chatStatus, setChatStatus] = useState("Choose a contact to start messaging");
+  const [messageSending, setMessageSending] = useState(false);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const [showChatPanel, setShowChatPanel] = useState(false);
+
   const localAudioRef = useRef<HTMLAudioElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -195,6 +211,7 @@ export default function CallPage() {
   const showIncomingModalRef = useRef(false);
   const incomingOfferRef = useRef<IncomingOffer | null>(null);
   const sessionIdRef = useRef(0);
+  const activeChatNumberRef = useRef("");
 
   const ringtoneContextRef = useRef<AudioContext | null>(null);
   const ringtoneIntervalRef = useRef<number | null>(null);
@@ -211,6 +228,10 @@ export default function CallPage() {
   useEffect(() => {
     activeRemoteNumberRef.current = activeRemoteNumber;
   }, [activeRemoteNumber]);
+
+  useEffect(() => {
+    activeChatNumberRef.current = activeChatNumber;
+  }, [activeChatNumber]);
 
   useEffect(() => {
     showIncomingModalRef.current = showIncomingModal;
@@ -276,6 +297,179 @@ export default function CallPage() {
   useEffect(() => {
     localStorage.setItem("taurus_target_number", targetNumber);
   }, [targetNumber]);
+
+  useEffect(() => {
+    if (activeChatNumber) return;
+
+    if (isValidTaurusNumber(targetNumber) && targetNumber !== myNumber) {
+      setActiveChatNumber(targetNumber);
+      return;
+    }
+
+    const firstContact = contacts.find((item) => isValidTaurusNumber(item.number));
+    if (firstContact) {
+      setActiveChatNumber(firstContact.number);
+    }
+  }, [activeChatNumber, contacts, myNumber, targetNumber]);
+
+  useEffect(() => {
+    if (!isValidTaurusNumber(myNumber) || !activeChatNumber) {
+      setChatMessages([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadMessages = async () => {
+      setChatStatus("Loading messages...");
+
+      const { data, error } = await supabase
+        .from("messages")
+        .select("id, sender, receiver, content, created_at")
+        .or(
+          `and(sender.eq."${myNumber}",receiver.eq."${activeChatNumber}"),and(sender.eq."${activeChatNumber}",receiver.eq."${myNumber}")`
+        )
+        .order("created_at", { ascending: true });
+
+      if (cancelled) return;
+
+      if (error) {
+        console.error("load messages error", error.message);
+        setChatMessages([]);
+        setChatStatus("Failed to load messages");
+        return;
+      }
+
+      setChatMessages((data || []) as MessageItem[]);
+      setChatStatus(
+        (data || []).length ? "Messages synced" : "No messages yet. Say hello."
+      );
+      setUnreadCounts((prev) => {
+        if (!prev[activeChatNumber]) return prev;
+        return { ...prev, [activeChatNumber]: 0 };
+      });
+    };
+
+    void loadMessages();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeChatNumber, myNumber]);
+
+  useEffect(() => {
+    if (!isValidTaurusNumber(myNumber)) return;
+
+    const messageChannel = supabase
+      .channel("taurus-messages")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "messages",
+        },
+        (payload) => {
+          const row = payload.new as MessageItem;
+          const involvesMe =
+            row.sender === myNumberRef.current || row.receiver === myNumberRef.current;
+
+          if (!involvesMe) return;
+
+          const otherParty =
+            row.sender === myNumberRef.current ? row.receiver : row.sender;
+
+          const activeChat = activeChatNumberRef.current;
+
+          if (activeChat && otherParty === activeChat) {
+            setChatMessages((prev) => {
+              if (prev.some((item) => item.id === row.id)) return prev;
+              return [...prev, row];
+            });
+            setChatStatus("Messages synced");
+            if (row.sender !== myNumberRef.current) {
+              setUnreadCounts((prev) => ({ ...prev, [otherParty]: 0 }));
+            }
+          } else if (row.sender !== myNumberRef.current) {
+            setUnreadCounts((prev) => ({
+              ...prev,
+              [otherParty]: (prev[otherParty] || 0) + 1,
+            }));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(messageChannel);
+    };
+  }, [myNumber]);
+
+  async function openChat(number: string) {
+    const cleanNumber = normalizeNumber(number);
+
+    if (!isValidTaurusNumber(cleanNumber) || cleanNumber === myNumber) {
+      setChatStatus("Choose a valid Taurus number to message");
+      return;
+    }
+
+    setTargetNumber(cleanNumber);
+    setActiveChatNumber(cleanNumber);
+    setShowChatPanel(true);
+    setActiveTab("messages");
+  }
+
+  async function sendMessage() {
+    const cleanChatNumber = normalizeNumber(activeChatNumber);
+
+    if (!isValidTaurusNumber(myNumber)) {
+      setChatStatus("Bind your owned number before sending messages");
+      return;
+    }
+
+    if (!isValidTaurusNumber(cleanChatNumber) || cleanChatNumber === myNumber) {
+      setChatStatus("Choose a valid target number");
+      return;
+    }
+
+    const content = messageInput.trim();
+    if (!content) return;
+
+    try {
+      setMessageSending(true);
+
+      const { data, error } = await supabase
+        .from("messages")
+        .insert({
+          sender: myNumber,
+          receiver: cleanChatNumber,
+          content,
+        })
+        .select("id, sender, receiver, content, created_at")
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      if (data) {
+        setChatMessages((prev) => {
+          if (prev.some((item) => item.id === data.id)) return prev;
+          return [...prev, data as MessageItem];
+        });
+      }
+
+      setMessageInput("");
+      setChatStatus("Message sent");
+    } catch (error) {
+      console.error("send message error", error);
+      setChatStatus(
+        error instanceof Error ? error.message : "Failed to send message"
+      );
+    } finally {
+      setMessageSending(false);
+    }
+  }
 
   useEffect(() => {
     const channel = supabase.channel(SIGNAL_CHANNEL);
@@ -1148,6 +1342,54 @@ export default function CallPage() {
     return found?.name || activeRemoteNumber || "Unknown";
   }, [contacts, activeRemoteNumber]);
 
+  const activeChatName = useMemo(() => {
+    const found = contacts.find((c) => c.number === activeChatNumber);
+    return found?.name || activeChatNumber || "Unknown";
+  }, [activeChatNumber, contacts]);
+
+  const chatTargets = useMemo(() => {
+    const map = new Map<string, { number: string; name: string; avatar: string }>();
+
+    contacts.forEach((contact) => {
+      if (!isValidTaurusNumber(contact.number)) return;
+      map.set(contact.number, {
+        number: contact.number,
+        name: contact.name,
+        avatar: contact.avatar,
+      });
+    });
+
+    recents.forEach((recent) => {
+      if (!isValidTaurusNumber(recent.number)) return;
+      if (recent.number === myNumber) return;
+      if (!map.has(recent.number)) {
+        map.set(recent.number, {
+          number: recent.number,
+          name: recent.name || recent.number,
+          avatar: buildAvatar(recent.name || recent.number),
+        });
+      }
+    });
+
+    if (isValidTaurusNumber(targetNumber) && targetNumber !== myNumber && !map.has(targetNumber)) {
+      map.set(targetNumber, {
+        number: targetNumber,
+        name: targetNumber,
+        avatar: buildAvatar(targetNumber),
+      });
+    }
+
+    if (activeChatNumber && !map.has(activeChatNumber)) {
+      map.set(activeChatNumber, {
+        number: activeChatNumber,
+        name: activeChatName,
+        avatar: buildAvatar(activeChatName),
+      });
+    }
+
+    return Array.from(map.values());
+  }, [contacts, recents, myNumber, targetNumber, activeChatNumber, activeChatName]);
+
   const formattedDuration = useMemo(() => {
     const mins = Math.floor(callSeconds / 60)
       .toString()
@@ -1170,6 +1412,7 @@ export default function CallPage() {
           {key === "favorites" && "★"}
           {key === "recents" && "🕘"}
           {key === "contacts" && "👤"}
+          {key === "messages" && "✉️"}
           {key === "keypad" && "⌨"}
           {key === "voicemail" && "◉"}
         </span>
@@ -1289,6 +1532,12 @@ export default function CallPage() {
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
+                  onClick={() => openChat(contact.number)}
+                  className="rounded-full bg-[#0a84ff] px-3 py-2 text-xs font-semibold text-white"
+                >
+                  Message
+                </button>
+                <button
                   onClick={() => toggleFavorite(contact.id)}
                   className="rounded-full bg-[#f2f2f7] px-3 py-2 text-xs font-semibold text-[#111111]"
                 >
@@ -1304,6 +1553,189 @@ export default function CallPage() {
             </div>
           ))
         )}
+      </div>
+    </div>
+  );
+
+  const renderMessages = () => (
+    <div className="space-y-4">
+      <div className="rounded-[30px] bg-white px-4 py-4 shadow-sm">
+        <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[#8e8e93]">
+          Secure Messages
+        </div>
+        <div className="mt-2 text-2xl font-bold tracking-[-0.02em] text-[#111111]">
+          {activeChatName || "Messages"}
+        </div>
+        <div className="mt-1 text-sm text-[#8e8e93]">
+          {activeChatNumber || "Choose a contact or target number"}
+        </div>
+        <div className="mt-3 text-xs text-[#8e8e93]">{chatStatus}</div>
+      </div>
+
+      <div className="grid grid-cols-[156px,1fr] gap-3">
+        <div className="space-y-3">
+          <button
+            onClick={() => openChat(targetNumber)}
+            className="flex w-full items-center justify-between rounded-3xl bg-white px-4 py-3 text-left shadow-sm"
+          >
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8e8e93]">
+                Current Target
+              </div>
+              <div className="mt-1 text-sm font-semibold text-[#111111]">
+                {targetNumber}
+              </div>
+            </div>
+            <span className="text-lg">→</span>
+          </button>
+
+          <div className="space-y-2">
+            {chatTargets.length === 0 ? (
+              <div className="rounded-3xl bg-white px-4 py-5 text-center text-sm text-[#8e8e93] shadow-sm">
+                No chat contacts yet.
+              </div>
+            ) : (
+              chatTargets.map((item) => {
+                const active = item.number === activeChatNumber;
+                const unread = unreadCounts[item.number] || 0;
+
+                return (
+                  <button
+                    key={item.number}
+                    onClick={() => openChat(item.number)}
+                    className={`flex w-full items-center gap-3 rounded-3xl px-3 py-3 text-left shadow-sm transition ${
+                      active ? "bg-[#0a84ff] text-white" : "bg-white text-[#111111]"
+                    }`}
+                  >
+                    <div
+                      className={`flex h-11 w-11 items-center justify-center rounded-full text-sm font-bold ${
+                        active ? "bg-white/20 text-white" : "bg-[#0a84ff] text-white"
+                      }`}
+                    >
+                      {item.avatar}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-semibold">{item.name}</div>
+                      <div
+                        className={`truncate text-xs ${
+                          active ? "text-white/70" : "text-[#8e8e93]"
+                        }`}
+                      >
+                        {item.number}
+                      </div>
+                    </div>
+                    {unread > 0 && (
+                      <div
+                        className={`flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-[11px] font-bold ${
+                          active ? "bg-white text-[#0a84ff]" : "bg-[#ff3b30] text-white"
+                        }`}
+                      >
+                        {unread > 99 ? "99+" : unread}
+                      </div>
+                    )}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-[30px] bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-[#ededf1] px-4 py-3">
+            <div>
+              <div className="text-base font-semibold text-[#111111]">{activeChatName}</div>
+              <div className="text-xs text-[#8e8e93]">{activeChatNumber || "No active chat"}</div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  if (activeChatNumber) {
+                    setTargetNumber(activeChatNumber);
+                    setActiveTab("keypad");
+                  }
+                }}
+                className="rounded-full bg-[#34c759] px-3 py-2 text-xs font-semibold text-white"
+              >
+                Call
+              </button>
+              <button
+                onClick={() => setShowChatPanel((prev) => !prev)}
+                className="rounded-full bg-[#f2f2f7] px-3 py-2 text-xs font-semibold text-[#111111]"
+              >
+                {showChatPanel ? "Collapse" : "Expand"}
+              </button>
+            </div>
+          </div>
+
+          <div className={`${showChatPanel ? "h-[360px]" : "h-[300px]"} overflow-y-auto px-3 py-3`}>
+            {chatMessages.length === 0 ? (
+              <div className="flex h-full items-center justify-center text-center text-sm text-[#8e8e93]">
+                No messages yet.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {chatMessages.map((message) => {
+                  const mine = message.sender === myNumber;
+
+                  return (
+                    <div
+                      key={message.id}
+                      className={`flex ${mine ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[82%] rounded-[24px] px-4 py-3 text-sm shadow-sm ${
+                          mine
+                            ? "bg-[#0a84ff] text-white"
+                            : "bg-[#f2f2f7] text-[#111111]"
+                        }`}
+                      >
+                        <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                        <div
+                          className={`mt-1 text-[10px] ${
+                            mine ? "text-white/70" : "text-[#8e8e93]"
+                          }`}
+                        >
+                          {new Date(message.created_at).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-[#ededf1] px-3 py-3">
+            <div className="flex gap-2">
+              <input
+                value={messageInput}
+                onChange={(e) => setMessageInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void sendMessage();
+                  }
+                }}
+                placeholder={
+                  activeChatNumber
+                    ? `Message ${activeChatName || activeChatNumber}`
+                    : "Choose a contact first"
+                }
+                className="w-full rounded-2xl border border-[#e5e5ea] bg-[#f7f7fa] px-4 py-3 text-sm text-[#111111] outline-none"
+              />
+              <button
+                onClick={() => void sendMessage()}
+                disabled={!activeChatNumber || !messageInput.trim() || messageSending}
+                className="rounded-2xl bg-[#0a84ff] px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1466,6 +1898,7 @@ export default function CallPage() {
                 {activeTab === "favorites" && renderFavorites()}
                 {activeTab === "recents" && renderRecents()}
                 {activeTab === "contacts" && renderContacts()}
+                {activeTab === "messages" && renderMessages()}
                 {activeTab === "keypad" && renderKeypad()}
                 {activeTab === "voicemail" && renderVoicemail()}
               </div>
@@ -1476,6 +1909,7 @@ export default function CallPage() {
                 {tabButton("favorites", "Favorites")}
                 {tabButton("recents", "Recents")}
                 {tabButton("contacts", "Contacts")}
+                {tabButton("messages", "Messages")}
                 {tabButton("keypad", "Keypad")}
                 {tabButton("voicemail", "Voicemail")}
               </div>

@@ -1,26 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
 import admin from "firebase-admin";
 
-function getPrivateKey() {
-  const key = process.env.FIREBASE_PRIVATE_KEY;
-  if (!key) {
-    throw new Error("Missing FIREBASE_PRIVATE_KEY");
-  }
-  return key.replace(/\\n/g, "\n");
-}
+export const runtime = "nodejs";
 
-if (!admin.apps.length) {
-  admin.initializeApp({
+function getFirebaseAdminApp() {
+  if (admin.apps.length) {
+    return admin.app();
+  }
+
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
+
+  if (!projectId || !clientEmail || !privateKey) {
+    return null;
+  }
+
+  return admin.initializeApp({
     credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: getPrivateKey(),
+      projectId,
+      clientEmail,
+      privateKey,
     }),
   });
 }
 
 export async function POST(req: NextRequest) {
   try {
+    const app = getFirebaseAdminApp();
+
+    if (!app) {
+      return NextResponse.json(
+        {
+          error:
+            "Firebase Admin env vars are missing. Set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY.",
+        },
+        { status: 500 }
+      );
+    }
+
     const { token, title, body } = await req.json();
 
     if (!token) {
@@ -38,6 +56,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, response });
   } catch (error) {
     console.error("Push error:", error);
+
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "Push send failed",
