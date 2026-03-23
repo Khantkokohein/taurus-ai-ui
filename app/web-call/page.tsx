@@ -1,7 +1,5 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import { requestFCMToken, onForegroundMessage } from "../../lib/firebase";
 import { supabase } from "../../lib/client";
@@ -21,12 +19,8 @@ type RecentItem = {
   id: number;
   name: string;
   number: string;
-  direction: "incoming" | "outgoing";
-  result: "missed" | "declined" | "ended" | "answered";
-  callType: "voice" | "video";
+  type: "incoming" | "outgoing" | "missed";
   time: string;
-  createdAt: string;
-  durationSeconds?: number;
 };
 
 type ContactItem = {
@@ -45,40 +39,10 @@ type MessageItem = {
   created_at: string;
 };
 
-type CallLogRow = {
-  id: string;
-  from_number: string;
-  to_number: string;
-  direction: "incoming" | "outgoing";
-  result: "missed" | "declined" | "ended" | "answered";
-  call_type: "voice" | "video";
-  duration_seconds: number | null;
-  created_at: string;
-};
-
-type ActivityItem =
-  | {
-      id: string;
-      kind: "message";
-      createdAt: string;
-      label: string;
-      sublabel: string;
-      mine: boolean;
-    }
-  | {
-      id: string;
-      kind: "call";
-      createdAt: string;
-      label: string;
-      sublabel: string;
-      mine: boolean;
-    };
-
 type IncomingOffer = {
   from: string;
   to: string;
   sdp: RTCSessionDescriptionInit;
-  callType?: "voice" | "video";
 };
 
 type OwnershipBoundRow = {
@@ -196,24 +160,7 @@ function buildAvatar(name: string) {
   return trimmed ? trimmed.charAt(0).toUpperCase() : "T";
 }
 
-function formatDuration(seconds: number) {
-  const mins = Math.floor(seconds / 60)
-    .toString()
-    .padStart(2, "0");
-  const secs = (seconds % 60).toString().padStart(2, "0");
-  return `${mins}:${secs}`;
-}
-
-function getRecentResultLabel(item: RecentItem) {
-  if (item.result === "missed") return "Missed";
-  if (item.result === "declined") return "Declined";
-  if (item.result === "answered") return "Answered";
-  return "Ended";
-}
-
 export default function CallPage() {
- 
-
   const [activeTab, setActiveTab] = useState<TabKey>("keypad");
 
   const [myNumber, setMyNumber] = useState(PHONE_PREFIX);
@@ -230,9 +177,6 @@ export default function CallPage() {
   const [speakerOn, setSpeakerOn] = useState(false);
   const [muted, setMuted] = useState(false);
   const [callSeconds, setCallSeconds] = useState(0);
-  const [cameraOn, setCameraOn] = useState(true);
-  const [isFrontCamera, setIsFrontCamera] = useState(true);
-  const [currentCallType, setCurrentCallType] = useState<"voice" | "video">("voice");
 
   const [incomingOffer, setIncomingOffer] = useState<IncomingOffer | null>(null);
   const [incomingFrom, setIncomingFrom] = useState("");
@@ -248,14 +192,10 @@ export default function CallPage() {
   const [chatStatus, setChatStatus] = useState("Choose a contact to start messaging");
   const [messageSending, setMessageSending] = useState(false);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
-  const [missedCallCounts, setMissedCallCounts] = useState<Record<string, number>>({});
   const [showChatPanel, setShowChatPanel] = useState(false);
-  const [callLogs, setCallLogs] = useState<CallLogRow[]>([]);
 
   const localAudioRef = useRef<HTMLAudioElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-  const localVideoRef = useRef<HTMLVideoElement | null>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
@@ -272,9 +212,6 @@ export default function CallPage() {
   const incomingOfferRef = useRef<IncomingOffer | null>(null);
   const sessionIdRef = useRef(0);
   const activeChatNumberRef = useRef("");
-  const currentCallTypeRef = useRef<"voice" | "video">("voice");
-  const currentCallStartedAtRef = useRef<number | null>(null);
-  const lastCallResultLoggedRef = useRef(false);
 
   const ringtoneContextRef = useRef<AudioContext | null>(null);
   const ringtoneIntervalRef = useRef<number | null>(null);
@@ -305,10 +242,6 @@ export default function CallPage() {
   }, [incomingOffer]);
 
   useEffect(() => {
-    currentCallTypeRef.current = currentCallType;
-  }, [currentCallType]);
-
-  useEffect(() => {
     const storedContacts = safeJsonParse<ContactItem[]>(
       localStorage.getItem("taurus_contacts"),
       defaultContacts
@@ -318,19 +251,9 @@ export default function CallPage() {
       defaultRecents
     );
     const storedTarget = localStorage.getItem("taurus_target_number");
-    const storedUnread = safeJsonParse<Record<string, number>>(
-      localStorage.getItem("taurus_unread_counts"),
-      {}
-    );
-    const storedMissed = safeJsonParse<Record<string, number>>(
-      localStorage.getItem("taurus_missed_counts"),
-      {}
-    );
 
     setContacts(storedContacts);
     setRecents(storedRecents);
-    setUnreadCounts(storedUnread);
-    setMissedCallCounts(storedMissed);
     if (storedTarget) setTargetNumber(storedTarget);
 
     void bindOwnedNumber();
@@ -340,6 +263,8 @@ export default function CallPage() {
     const initFCM = async () => {
       const token = await requestFCMToken();
       if (!token) return;
+
+      console.log("🔥 Saved FCM token:", token);
 
       const deviceId = getOrCreateDeviceId();
 
@@ -357,20 +282,7 @@ export default function CallPage() {
     void initFCM();
 
     onForegroundMessage((payload) => {
-      const data = (payload?.data || {}) as Record<string, string | undefined>;
-      const intent = data.intent;
-      const target = data.target || "";
-      const from = data.from || "";
-
-      if (intent === "open-chat" && target) {
-        void openChat(target);
-      }
-
-      if (intent === "open-call" && from) {
-        setActiveRemoteNumber(from);
-        setTargetNumber(from);
-        setActiveTab("messages");
-      }
+      console.log("📩 Foreground Notification:", payload);
     });
   }, []);
 
@@ -387,14 +299,6 @@ export default function CallPage() {
   }, [targetNumber]);
 
   useEffect(() => {
-    localStorage.setItem("taurus_unread_counts", JSON.stringify(unreadCounts));
-  }, [unreadCounts]);
-
-  useEffect(() => {
-    localStorage.setItem("taurus_missed_counts", JSON.stringify(missedCallCounts));
-  }, [missedCallCounts]);
-
-  useEffect(() => {
     if (activeChatNumber) return;
 
     if (isValidTaurusNumber(targetNumber) && targetNumber !== myNumber) {
@@ -409,90 +313,44 @@ export default function CallPage() {
   }, [activeChatNumber, contacts, myNumber, targetNumber]);
 
   useEffect(() => {
-  if (typeof window === "undefined") return;
-
-  const params = new URLSearchParams(window.location.search);
-  const deepLinkTab = params.get("tab");
-  const deepLinkNumber = params.get("number");
-  const deepLinkIntent = params.get("intent");
-
-  if (!deepLinkNumber || !isValidTaurusNumber(normalizeNumber(deepLinkNumber))) return;
-
-  const cleanNumber = normalizeNumber(deepLinkNumber);
-  setTargetNumber(cleanNumber);
-
-  if (deepLinkIntent === "chat" || deepLinkTab === "messages") {
-    void openChat(cleanNumber);
-    setActiveTab("messages");
-  }
-
-  if (deepLinkIntent === "call") {
-    setActiveRemoteNumber(cleanNumber);
-    setActiveTab("messages");
-  }
-}, []);
-
-  useEffect(() => {
     if (!isValidTaurusNumber(myNumber) || !activeChatNumber) {
       setChatMessages([]);
-      setCallLogs([]);
       return;
     }
 
     let cancelled = false;
 
-    const loadMessagesAndCalls = async () => {
+    const loadMessages = async () => {
       setChatStatus("Loading messages...");
 
-      const [messagesResponse, callsResponse] = await Promise.all([
-        supabase
-          .from("messages")
-          .select("id, sender, receiver, content, created_at")
-          .or(
-            `and(sender.eq."${myNumber}",receiver.eq."${activeChatNumber}"),and(sender.eq."${activeChatNumber}",receiver.eq."${myNumber}")`
-          )
-          .order("created_at", { ascending: true }),
-        supabase
-          .from("call_logs")
-          .select(
-            "id, from_number, to_number, direction, result, call_type, duration_seconds, created_at"
-          )
-          .or(
-            `and(from_number.eq."${myNumber}",to_number.eq."${activeChatNumber}"),and(from_number.eq."${activeChatNumber}",to_number.eq."${myNumber}")`
-          )
-          .order("created_at", { ascending: true }),
-      ]);
+      const { data, error } = await supabase
+        .from("messages")
+        .select("id, sender, receiver, content, created_at")
+        .or(
+          `and(sender.eq."${myNumber}",receiver.eq."${activeChatNumber}"),and(sender.eq."${activeChatNumber}",receiver.eq."${myNumber}")`
+        )
+        .order("created_at", { ascending: true });
 
       if (cancelled) return;
 
-      if (messagesResponse.error) {
-        console.error("load messages error", messagesResponse.error.message);
+      if (error) {
+        console.error("load messages error", error.message);
         setChatMessages([]);
         setChatStatus("Failed to load messages");
-      } else {
-        const data = (messagesResponse.data || []) as MessageItem[];
-        setChatMessages(data);
-        setChatStatus(data.length ? "Messages synced" : "No messages yet. Say hello.");
+        return;
       }
 
-      if (callsResponse.error) {
-        console.error("load call logs error", callsResponse.error.message);
-        setCallLogs([]);
-      } else {
-        setCallLogs((callsResponse.data || []) as CallLogRow[]);
-      }
-
+      setChatMessages((data || []) as MessageItem[]);
+      setChatStatus(
+        (data || []).length ? "Messages synced" : "No messages yet. Say hello."
+      );
       setUnreadCounts((prev) => {
-        if (!prev[activeChatNumber]) return prev;
-        return { ...prev, [activeChatNumber]: 0 };
-      });
-      setMissedCallCounts((prev) => {
         if (!prev[activeChatNumber]) return prev;
         return { ...prev, [activeChatNumber]: 0 };
       });
     };
 
-    void loadMessagesAndCalls();
+    void loadMessages();
 
     return () => {
       cancelled = true;
@@ -542,46 +400,8 @@ export default function CallPage() {
       )
       .subscribe();
 
-    const callLogChannel = supabase
-      .channel("taurus-call-logs")
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "call_logs",
-        },
-        (payload) => {
-          const row = payload.new as CallLogRow;
-          const involvesMe =
-            row.from_number === myNumberRef.current || row.to_number === myNumberRef.current;
-          if (!involvesMe) return;
-
-          const otherParty =
-            row.from_number === myNumberRef.current ? row.to_number : row.from_number;
-
-          if (activeChatNumberRef.current && activeChatNumberRef.current === otherParty) {
-            setCallLogs((prev) => {
-              if (prev.some((item) => item.id === row.id)) return prev;
-              return [...prev, row];
-            });
-          }
-
-          if (row.result === "missed" && row.to_number === myNumberRef.current) {
-            if (activeChatNumberRef.current !== otherParty) {
-              setMissedCallCounts((prev) => ({
-                ...prev,
-                [otherParty]: (prev[otherParty] || 0) + 1,
-              }));
-            }
-          }
-        }
-      )
-      .subscribe();
-
     return () => {
       void supabase.removeChannel(messageChannel);
-      void supabase.removeChannel(callLogChannel);
     };
   }, [myNumber]);
 
@@ -672,7 +492,6 @@ export default function CallPage() {
           await sendSignal("end-call", {
             from: mine,
             to: payload.from,
-            endReason: "declined",
           });
           return;
         }
@@ -683,16 +502,14 @@ export default function CallPage() {
           from: payload.from,
           to: payload.to,
           sdp: payload.sdp,
-          callType: payload.callType === "video" ? "video" : "voice",
         };
 
         pendingCandidatesRef.current = [];
         setIncomingOffer(offer);
         setIncomingFrom(payload.from);
-        setCurrentCallType(offer.callType || "voice");
         setActiveRemoteNumber(payload.from);
         setCallPhase("incoming");
-        setCallStatus(`Incoming ${offer.callType === "video" ? "video" : "voice"} call from ${payload.from}`);
+        setCallStatus(`Incoming call from ${payload.from}`);
         setShowIncomingModal(true);
         startRingtone("incoming");
       })
@@ -751,29 +568,14 @@ export default function CallPage() {
           console.error("ice error", error);
         }
       })
-      .on("broadcast", { event: "end-call" }, async ({ payload }) => {
+      .on("broadcast", { event: "end-call" }, ({ payload }) => {
         const mine = myNumberRef.current;
         if (!payload?.to || payload.to !== mine) return;
 
         stopRingtone();
 
-        const remote = payload.from || activeRemoteNumberRef.current;
-        const reason = payload.endReason === "declined" ? "declined" : !callConnectedRef.current ? "missed" : "ended";
-
-        if (remote) {
-          await persistCallLog(remote, {
-            direction: "incoming",
-            result: reason,
-            callType: payload.callType === "video" ? "video" : currentCallTypeRef.current,
-            durationSeconds: callConnectedRef.current ? callSeconds : 0,
-          });
-
-          if (reason === "missed") {
-            setMissedCallCounts((prev) => ({
-              ...prev,
-              [remote]: (prev[remote] || 0) + 1,
-            }));
-          }
+        if (!callConnectedRef.current && activeRemoteNumberRef.current) {
+          addRecent(activeRemoteNumberRef.current, "missed");
         }
 
         cleanupCall();
@@ -782,7 +584,7 @@ export default function CallPage() {
         setShowIncomingModal(false);
         setShowCallScreen(false);
         setCallPhase("ended");
-        setCallStatus(reason === "declined" ? "Call declined" : "Remote user ended the call");
+        setCallStatus("Remote user ended the call");
         setActiveRemoteNumber("");
       })
       .subscribe((status) => {
@@ -801,7 +603,7 @@ export default function CallPage() {
       stopRingtone();
       cleanupCall();
     };
-  }, [callSeconds]);
+  }, []);
 
   useEffect(() => {
     if (!showCallScreen || callPhase !== "in-call") return;
@@ -831,14 +633,6 @@ export default function CallPage() {
       remoteAudioRef.current.volume = speakerOn ? 1 : 0.75;
     }
   }, [speakerOn]);
-
-  useEffect(() => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getVideoTracks().forEach((videoTrack) => {
-        videoTrack.enabled = cameraOn;
-      });
-    }
-  }, [cameraOn]);
 
   async function bindOwnedNumber() {
     const deviceId = getOrCreateDeviceId();
@@ -902,73 +696,16 @@ export default function CallPage() {
     return id;
   }
 
-  function addRecent(
-    number: string,
-    direction: "incoming" | "outgoing",
-    result: "missed" | "declined" | "ended" | "answered",
-    callType: "voice" | "video",
-    durationSeconds = 0
-  ) {
+  function addRecent(number: string, type: "incoming" | "outgoing" | "missed") {
     const matched = contacts.find((c) => c.number === number);
     const item: RecentItem = {
-      id: Date.now() + Math.floor(Math.random() * 1000),
+      id: Date.now(),
       name: matched?.name || "Unknown",
       number,
-      direction,
-      result,
-      callType,
+      type,
       time: getNowTimeLabel(),
-      createdAt: new Date().toISOString(),
-      durationSeconds,
     };
-    setRecents((prev) => [item, ...prev].slice(0, 100));
-  }
-
-  async function persistCallLog(
-    number: string,
-    args: {
-      direction: "incoming" | "outgoing";
-      result: "missed" | "declined" | "ended" | "answered";
-      callType: "voice" | "video";
-      durationSeconds?: number;
-    }
-  ) {
-    if (!isValidTaurusNumber(myNumberRef.current) || !isValidTaurusNumber(number)) return;
-    const durationSeconds = args.durationSeconds || 0;
-    addRecent(number, args.direction, args.result, args.callType, durationSeconds);
-
-    const payload = {
-      from_number: args.direction === "outgoing" ? myNumberRef.current : number,
-      to_number: args.direction === "outgoing" ? number : myNumberRef.current,
-      direction: args.direction,
-      result: args.result,
-      call_type: args.callType,
-      duration_seconds: durationSeconds,
-    };
-
-    const { data, error } = await supabase
-      .from("call_logs")
-      .insert(payload)
-      .select(
-        "id, from_number, to_number, direction, result, call_type, duration_seconds, created_at"
-      )
-      .single();
-
-    if (error) {
-      console.error("persist call log error", error.message);
-      return;
-    }
-
-    if (data) {
-      const otherParty =
-        data.from_number === myNumberRef.current ? data.to_number : data.from_number;
-      if (otherParty === activeChatNumberRef.current) {
-        setCallLogs((prev) => {
-          if (prev.some((item) => item.id === data.id)) return prev;
-          return [...prev, data as CallLogRow];
-        });
-      }
-    }
+    setRecents((prev) => [item, ...prev]);
   }
 
   function clearCallTimeout() {
@@ -1017,22 +754,10 @@ export default function CallPage() {
       remoteAudioRef.current.srcObject = null;
     }
 
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-    }
-
     pendingCandidatesRef.current = [];
     callConnectedRef.current = false;
     setCallSeconds(0);
     setMuted(false);
-    setCameraOn(true);
-    setIsFrontCamera(true);
-    currentCallStartedAtRef.current = null;
-    lastCallResultLoggedRef.current = false;
   }
 
   function getAudioContext() {
@@ -1137,80 +862,30 @@ export default function CallPage() {
     }
   }
 
-  async function ensureMediaStream(callType: "voice" | "video", preferFront = true) {
-    const constraints: MediaStreamConstraints = {
-      audio: true,
-      video:
-        callType === "video"
-          ? {
-              facingMode: preferFront ? "user" : { exact: "environment" },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-            }
-          : false,
-    };
+  async function ensureMediaStream() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    localStreamRef.current = stream;
 
+    if (localAudioRef.current) {
+      localAudioRef.current.srcObject = stream;
+      localAudioRef.current.muted = true;
+    }
+
+    return stream;
+  }
+
+  async function attachRemoteAudio(stream: MediaStream) {
+    if (!remoteAudioRef.current) return;
+    remoteAudioRef.current.srcObject = stream;
+    remoteAudioRef.current.autoplay = true;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      localStreamRef.current = stream;
-
-      if (localAudioRef.current) {
-        localAudioRef.current.srcObject = stream;
-        localAudioRef.current.muted = true;
-      }
-
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = callType === "video" ? stream : null;
-        if (callType === "video") {
-          localVideoRef.current.muted = true;
-          await localVideoRef.current.play().catch(() => {});
-        }
-      }
-
-      return stream;
+      await remoteAudioRef.current.play();
     } catch (error) {
-      if (callType === "video") {
-        const fallback = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        localStreamRef.current = fallback;
-        if (localAudioRef.current) {
-          localAudioRef.current.srcObject = fallback;
-          localAudioRef.current.muted = true;
-        }
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = null;
-        }
-        setCurrentCallType("voice");
-        currentCallTypeRef.current = "voice";
-        return fallback;
-      }
-      throw error;
+      console.error("remote audio play blocked", error);
     }
   }
 
-  async function attachRemoteMedia(stream: MediaStream, callType: "voice" | "video") {
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.srcObject = stream;
-      remoteAudioRef.current.autoplay = true;
-      try {
-        await remoteAudioRef.current.play();
-      } catch (error) {
-        console.error("remote audio play blocked", error);
-      }
-    }
-
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = callType === "video" ? stream : null;
-      if (callType === "video") {
-        try {
-          await remoteVideoRef.current.play();
-        } catch (error) {
-          console.error("remote video play blocked", error);
-        }
-      }
-    }
-  }
-
-  async function buildPeerConnection(remoteNumber: string, callType: "voice" | "video") {
+  async function buildPeerConnection(remoteNumber: string) {
     const peer = new RTCPeerConnection(RTC_CONFIG);
     const remoteStream = new MediaStream();
 
@@ -1218,7 +893,7 @@ export default function CallPage() {
     remoteStreamRef.current = remoteStream;
     pendingCandidatesRef.current = [];
 
-    const stream = await ensureMediaStream(callType, isFrontCamera);
+    const stream = await ensureMediaStream();
 
     stream.getTracks().forEach((mediaTrack) => {
       try {
@@ -1240,11 +915,13 @@ export default function CallPage() {
             remoteStream.addTrack(mediaTrack);
           }
         });
-      } else if (event.track) {
-        remoteStream.addTrack(event.track);
+      } else {
+        if (event.track) {
+          remoteStream.addTrack(event.track);
+        }
       }
 
-      void attachRemoteMedia(remoteStream, currentCallTypeRef.current);
+      void attachRemoteAudio(remoteStream);
     };
 
     peer.onicecandidate = async (event) => {
@@ -1264,8 +941,6 @@ export default function CallPage() {
 
       if (state === "connected") {
         callConnectedRef.current = true;
-        lastCallResultLoggedRef.current = false;
-        currentCallStartedAtRef.current = Date.now();
         stopRingtone();
         clearCallTimeout();
         setCallPhase("in-call");
@@ -1298,48 +973,6 @@ export default function CallPage() {
     };
 
     return peer;
-  }
-
-  async function switchCamera() {
-    if (currentCallTypeRef.current !== "video") return;
-    const peer = peerRef.current;
-    if (!peer) return;
-
-    const nextFront = !isFrontCamera;
-    setIsFrontCamera(nextFront);
-
-    try {
-      const newStream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: nextFront ? "user" : { exact: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-      });
-
-      const newVideoTrack = newStream.getVideoTracks()[0];
-      if (!newVideoTrack) return;
-
-      const sender = peer.getSenders().find((item) => item.track?.kind === "video");
-      if (sender) {
-        await sender.replaceTrack(newVideoTrack);
-      }
-
-      if (localStreamRef.current) {
-        localStreamRef.current.getVideoTracks().forEach((track) => track.stop());
-        localStreamRef.current.removeTrack(localStreamRef.current.getVideoTracks()[0]);
-        localStreamRef.current.addTrack(newVideoTrack);
-      }
-
-      if (localVideoRef.current && localStreamRef.current) {
-        localVideoRef.current.srcObject = localStreamRef.current;
-        await localVideoRef.current.play().catch(() => {});
-      }
-    } catch (error) {
-      console.error("switch camera failed", error);
-      setCallStatus("Unable to switch camera");
-    }
   }
 
   async function validateTargetOwnership(numberWithPrefix: string) {
@@ -1391,12 +1024,7 @@ export default function CallPage() {
     return row?.fcm_token || null;
   }
 
-  async function sendIncomingPush(
-    receiverToken: string,
-    callerNumber: string,
-    receiverNumber: string,
-    callType: "voice" | "video"
-  ) {
+  async function sendIncomingPush(receiverToken: string, callerNumber: string) {
     try {
       const response = await fetch("/api/send-push", {
         method: "POST",
@@ -1405,17 +1033,8 @@ export default function CallPage() {
         },
         body: JSON.stringify({
           token: receiverToken,
-          title: callType === "video" ? "Incoming Video Call" : "Incoming Call",
+          title: "Incoming Call",
           body: `${callerNumber} is calling you`,
-          data: {
-            intent: "open-call",
-            from: callerNumber,
-            target: receiverNumber,
-            tab: "messages",
-            number: callerNumber,
-            callType,
-            url: `/web-call?intent=call&tab=messages&number=${encodeURIComponent(callerNumber)}`,
-          },
         }),
       });
 
@@ -1428,7 +1047,7 @@ export default function CallPage() {
     }
   }
 
-  async function startCall(callType: "voice" | "video") {
+  async function placeCall() {
     if (!ownedSuffix || !isValidTaurusNumber(myNumber)) {
       setCallStatus("No owned number is bound to this device");
       return;
@@ -1452,11 +1071,9 @@ export default function CallPage() {
         return;
       }
 
-      setCurrentCallType(callType);
-      currentCallTypeRef.current = callType;
       const receiverToken = await getTargetFcmToken(targetNumber);
       if (receiverToken) {
-        await sendIncomingPush(receiverToken, myNumberRef.current, targetNumber, callType);
+        await sendIncomingPush(receiverToken, myNumberRef.current);
       }
 
       sessionIdRef.current += 1;
@@ -1465,17 +1082,15 @@ export default function CallPage() {
       stopRingtone();
       cleanupCall();
 
-      setCurrentCallType(callType);
-      currentCallTypeRef.current = callType;
       setIncomingOffer(null);
       setIncomingFrom("");
       setShowIncomingModal(false);
       setActiveRemoteNumber(targetNumber);
       setShowCallScreen(true);
       setCallPhase("requesting-media");
-      setCallStatus(`Requesting ${callType === "video" ? "camera + microphone" : "microphone"}...`);
+      setCallStatus("Requesting microphone...");
 
-      const peer = await buildPeerConnection(targetNumber, callType);
+      const peer = await buildPeerConnection(targetNumber);
       if (sessionIdRef.current !== currentSessionId) return;
       if (!peerRef.current || peerRef.current !== peer) return;
       if (peer.connectionState === "closed") {
@@ -1487,7 +1102,6 @@ export default function CallPage() {
 
       const offer = await peer.createOffer({
         offerToReceiveAudio: true,
-        offerToReceiveVideo: callType === "video",
       });
 
       if (sessionIdRef.current !== currentSessionId) return;
@@ -1497,35 +1111,29 @@ export default function CallPage() {
 
       await peer.setLocalDescription(offer);
 
+      addRecent(targetNumber, "outgoing");
+
       await sendSignal("offer", {
         from: myNumberRef.current,
         to: targetNumber,
         sdp: offer,
-        callType,
       });
 
-      setCallStatus(callType === "video" ? "Video calling..." : "Calling...");
+      setCallStatus("Calling...");
       startRingtone("outgoing");
 
       callTimeoutRef.current = window.setTimeout(async () => {
         if (!callConnectedRef.current) {
           stopRingtone();
-          await persistCallLog(targetNumber, {
-            direction: "outgoing",
-            result: "missed",
-            callType,
-            durationSeconds: 0,
-          });
           cleanupCall();
           setShowCallScreen(false);
           setCallPhase("ended");
           setCallStatus("No answer (timeout)");
+          addRecent(targetNumber, "missed");
 
           await sendSignal("end-call", {
             from: myNumberRef.current,
             to: targetNumber,
-            endReason: "missed",
-            callType,
           });
 
           setActiveRemoteNumber("");
@@ -1544,14 +1152,6 @@ export default function CallPage() {
     }
   }
 
-  async function placeCall() {
-    await startCall("voice");
-  }
-
-  async function placeVideoCall() {
-    await startCall("video");
-  }
-
   async function acceptIncomingCall() {
     const currentIncomingOffer = incomingOfferRef.current;
     if (!currentIncomingOffer) return;
@@ -1559,23 +1159,18 @@ export default function CallPage() {
     try {
       sessionIdRef.current += 1;
       const currentSessionId = sessionIdRef.current;
-      const offerCallType = currentIncomingOffer.callType || "voice";
 
       clearCallTimeout();
       stopRingtone();
       cleanupCall();
 
-      setCurrentCallType(offerCallType);
-      currentCallTypeRef.current = offerCallType;
       setShowIncomingModal(false);
       setShowCallScreen(true);
       setActiveRemoteNumber(currentIncomingOffer.from);
       setCallPhase("requesting-media");
-      setCallStatus(
-        `Requesting ${offerCallType === "video" ? "camera + microphone" : "microphone"}...`
-      );
+      setCallStatus("Requesting microphone...");
 
-      const peer = await buildPeerConnection(currentIncomingOffer.from, offerCallType);
+      const peer = await buildPeerConnection(currentIncomingOffer.from);
       if (sessionIdRef.current !== currentSessionId) return;
       if (!peerRef.current || peerRef.current !== peer) return;
       if (peer.connectionState === "closed") {
@@ -1602,18 +1197,18 @@ export default function CallPage() {
 
       await peer.setLocalDescription(answer);
 
+      addRecent(currentIncomingOffer.from, "incoming");
+
       await sendSignal("answer", {
         from: myNumberRef.current,
         to: currentIncomingOffer.from,
         sdp: answer,
-        callType: offerCallType,
       });
 
       setCallPhase("connecting");
       setCallStatus("Answer sent. Connecting...");
       setIncomingOffer(null);
       setIncomingFrom("");
-      void openChat(currentIncomingOffer.from);
     } catch (error) {
       console.error("accept call failed", error);
       stopRingtone();
@@ -1635,17 +1230,10 @@ export default function CallPage() {
 
     const currentIncomingOffer = incomingOfferRef.current;
     if (currentIncomingOffer) {
-      await persistCallLog(currentIncomingOffer.from, {
-        direction: "incoming",
-        result: "declined",
-        callType: currentIncomingOffer.callType || "voice",
-        durationSeconds: 0,
-      });
+      addRecent(currentIncomingOffer.from, "missed");
       await sendSignal("end-call", {
         from: myNumberRef.current,
         to: currentIncomingOffer.from,
-        endReason: "declined",
-        callType: currentIncomingOffer.callType || "voice",
       });
     }
 
@@ -1664,19 +1252,6 @@ export default function CallPage() {
 
     const remote =
       activeRemoteNumberRef.current || incomingOfferRef.current?.from || "";
-    const callType = currentCallTypeRef.current;
-    const durationSeconds = callConnectedRef.current ? callSeconds : 0;
-    const result = callConnectedRef.current ? "ended" : callPhaseRef.current === "incoming" ? "declined" : "missed";
-
-    if (remote && !lastCallResultLoggedRef.current) {
-      lastCallResultLoggedRef.current = true;
-      await persistCallLog(remote, {
-        direction: "outgoing",
-        result,
-        callType,
-        durationSeconds,
-      });
-    }
 
     cleanupCall();
     setShowCallScreen(false);
@@ -1684,17 +1259,14 @@ export default function CallPage() {
     setIncomingOffer(null);
     setIncomingFrom("");
     setCallPhase("ended");
-    setCallStatus(result === "declined" ? "Call declined" : "Call ended");
+    setCallStatus("Call ended");
     setActiveRemoteNumber("");
 
     if (remote) {
       await sendSignal("end-call", {
         from: myNumberRef.current,
         to: remote,
-        endReason: result,
-        callType,
       });
-      void openChat(remote);
     }
   }
 
@@ -1818,79 +1390,24 @@ export default function CallPage() {
     return Array.from(map.values());
   }, [contacts, recents, myNumber, targetNumber, activeChatNumber, activeChatName]);
 
-  const formattedDuration = useMemo(() => formatDuration(callSeconds), [callSeconds]);
-
-  const activityTimeline = useMemo<ActivityItem[]>(() => {
-    const items: ActivityItem[] = [
-      ...chatMessages.map((message) => ({
-        id: `msg-${message.id}`,
-        kind: "message" as const,
-        createdAt: message.created_at,
-        label: message.content,
-        sublabel: `${message.sender === myNumber ? "You" : activeChatName} · ${new Date(
-          message.created_at
-        ).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        })}`,
-        mine: message.sender === myNumber,
-      })),
-      ...callLogs.map((call) => {
-        const isMine = call.from_number === myNumber;
-        const baseLabel = `${call.call_type === "video" ? "Video" : "Voice"} ${
-          call.result === "missed"
-            ? "call missed"
-            : call.result === "declined"
-            ? "call declined"
-            : call.result === "answered"
-            ? "call answered"
-            : "call ended"
-        }`;
-        const durationLabel = call.duration_seconds ? ` · ${formatDuration(call.duration_seconds)}` : "";
-        return {
-          id: `call-${call.id}`,
-          kind: "call" as const,
-          createdAt: call.created_at,
-          label: baseLabel,
-          sublabel: `${isMine ? "You" : activeChatName} · ${new Date(call.created_at).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}${durationLabel}`,
-          mine: isMine,
-        };
-      }),
-    ];
-
-    return items.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [chatMessages, callLogs, myNumber, activeChatName]);
-
-  const totalMessagesUnread = useMemo(
-    () => Object.values(unreadCounts).reduce((sum, count) => sum + count, 0),
-    [unreadCounts]
-  );
-
-  const totalMissedCalls = useMemo(
-    () => Object.values(missedCallCounts).reduce((sum, count) => sum + count, 0),
-    [missedCallCounts]
-  );
+  const formattedDuration = useMemo(() => {
+    const mins = Math.floor(callSeconds / 60)
+      .toString()
+      .padStart(2, "0");
+    const secs = (callSeconds % 60).toString().padStart(2, "0");
+    return `${mins}:${secs}`;
+  }, [callSeconds]);
 
   const tabButton = (key: TabKey, label: string) => {
     const active = activeTab === key;
-    const badge = key === "messages" ? totalMessagesUnread : key === "recents" ? totalMissedCalls : 0;
-
     return (
       <button
         type="button"
         onClick={() => setActiveTab(key)}
-        className={`relative flex flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 text-[11px] font-medium transition ${
+        className={`flex flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 text-[11px] font-medium transition ${
           active ? "text-[#0a84ff]" : "text-[#8e8e93]"
         }`}
       >
-        {badge > 0 && (
-          <span className="absolute right-2 top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-[#ff3b30] px-1 text-[10px] font-bold text-white">
-            {badge > 99 ? "99+" : badge}
-          </span>
-        )}
         <span className="text-lg">
           {key === "favorites" && "★"}
           {key === "recents" && "🕘"}
@@ -1917,7 +1434,7 @@ export default function CallPage() {
             onClick={() => setTargetNumber(contact.number)}
             className="flex w-full items-center gap-4 rounded-3xl bg-white px-4 py-4 text-left shadow-sm"
           >
-            <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[#0a84ff] text-sm font-bold text-white">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#0a84ff] text-sm font-bold text-white">
               {contact.avatar}
             </div>
             <div className="min-w-0 flex-1">
@@ -1946,36 +1463,24 @@ export default function CallPage() {
             className="flex items-center gap-3 rounded-3xl bg-white px-4 py-4 shadow-sm"
           >
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#f2f2f7] text-lg">
-              {item.callType === "video" ? "🎥" : item.result === "missed" ? "❗" : "📞"}
+              {item.type === "missed" ? "❗" : "📞"}
             </div>
             <div className="min-w-0 flex-1">
               <div
                 className={`truncate text-base font-semibold ${
-                  item.result === "missed" ? "text-[#ff3b30]" : "text-[#111111]"
+                  item.type === "missed" ? "text-[#ff3b30]" : "text-[#111111]"
                 }`}
               >
                 {item.name}
               </div>
               <div className="truncate text-sm text-[#8e8e93]">{item.number}</div>
-              <div className="mt-1 text-xs text-[#8e8e93]">
-                {item.callType === "video" ? "Video" : "Voice"} · {item.direction} · {getRecentResultLabel(item)}
-                {item.durationSeconds ? ` · ${formatDuration(item.durationSeconds)}` : ""}
-              </div>
             </div>
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={() => setTargetNumber(item.number)}
-                className="rounded-full bg-[#0a84ff] px-3 py-2 text-xs font-semibold text-white"
-              >
-                Dial
-              </button>
-              <button
-                onClick={() => void openChat(item.number)}
-                className="rounded-full bg-[#34c759] px-3 py-2 text-xs font-semibold text-white"
-              >
-                Callback
-              </button>
-            </div>
+            <button
+              onClick={() => setTargetNumber(item.number)}
+              className="rounded-full bg-[#0a84ff] px-3 py-2 text-xs font-semibold text-white"
+            >
+              Dial
+            </button>
           </div>
         ))
       )}
@@ -2008,7 +1513,7 @@ export default function CallPage() {
           filteredContacts.map((contact) => (
             <div key={contact.id} className="rounded-3xl bg-white px-4 py-4 shadow-sm">
               <div className="flex items-center gap-4">
-                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[#0a84ff] text-sm font-bold text-white">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#0a84ff] text-sm font-bold text-white">
                   {contact.avatar}
                 </div>
                 <div className="min-w-0 flex-1">
@@ -2027,16 +1532,10 @@ export default function CallPage() {
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
-                  onClick={() => void openChat(contact.number)}
+                  onClick={() => openChat(contact.number)}
                   className="rounded-full bg-[#0a84ff] px-3 py-2 text-xs font-semibold text-white"
                 >
                   Message
-                </button>
-                <button
-                  disabled
-                  className="rounded-full bg-[#ececf3] px-3 py-2 text-xs font-semibold text-[#8e8e93]"
-                >
-                  Video — Coming Soon
                 </button>
                 <button
                   onClick={() => toggleFavorite(contact.id)}
@@ -2060,7 +1559,7 @@ export default function CallPage() {
 
   const renderMessages = () => (
     <div className="space-y-4">
-      <div className="rounded-[24px] bg-white px-4 py-3 shadow-sm">
+      <div className="rounded-[30px] bg-white px-4 py-4 shadow-sm">
         <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[#8e8e93]">
           Secure Messages
         </div>
@@ -2073,10 +1572,10 @@ export default function CallPage() {
         <div className="mt-3 text-xs text-[#8e8e93]">{chatStatus}</div>
       </div>
 
-      <div className="grid grid-cols-[138px,1fr] gap-2.5">
+      <div className="grid grid-cols-[156px,1fr] gap-3">
         <div className="space-y-3">
           <button
-            onClick={() => void openChat(targetNumber)}
+            onClick={() => openChat(targetNumber)}
             className="flex w-full items-center justify-between rounded-3xl bg-white px-4 py-3 text-left shadow-sm"
           >
             <div>
@@ -2099,12 +1598,11 @@ export default function CallPage() {
               chatTargets.map((item) => {
                 const active = item.number === activeChatNumber;
                 const unread = unreadCounts[item.number] || 0;
-                const missed = missedCallCounts[item.number] || 0;
 
                 return (
                   <button
                     key={item.number}
-                    onClick={() => void openChat(item.number)}
+                    onClick={() => openChat(item.number)}
                     className={`flex w-full items-center gap-3 rounded-3xl px-3 py-3 text-left shadow-sm transition ${
                       active ? "bg-[#0a84ff] text-white" : "bg-white text-[#111111]"
                     }`}
@@ -2126,22 +1624,15 @@ export default function CallPage() {
                         {item.number}
                       </div>
                     </div>
-                    <div className="flex flex-col items-end gap-1">
-                      {unread > 0 && (
-                        <div
-                          className={`flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-[11px] font-bold ${
-                            active ? "bg-white text-[#0a84ff]" : "bg-[#ff3b30] text-white"
-                          }`}
-                        >
-                          {unread > 99 ? "99+" : unread}
-                        </div>
-                      )}
-                      {missed > 0 && (
-                        <div className="rounded-full bg-[#ff9500] px-2 py-1 text-[10px] font-bold text-white">
-                          {missed} missed
-                        </div>
-                      )}
-                    </div>
+                    {unread > 0 && (
+                      <div
+                        className={`flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-[11px] font-bold ${
+                          active ? "bg-white text-[#0a84ff]" : "bg-[#ff3b30] text-white"
+                        }`}
+                      >
+                        {unread > 99 ? "99+" : unread}
+                      </div>
+                    )}
                   </button>
                 );
               })
@@ -2160,23 +1651,12 @@ export default function CallPage() {
                 onClick={() => {
                   if (activeChatNumber) {
                     setTargetNumber(activeChatNumber);
-                    void placeCall();
+                    setActiveTab("keypad");
                   }
                 }}
                 className="rounded-full bg-[#34c759] px-3 py-2 text-xs font-semibold text-white"
               >
                 Call
-              </button>
-              <button
-                onClick={() => {
-                  if (activeChatNumber) {
-                    setTargetNumber(activeChatNumber);
-                    void placeVideoCall();
-                  }
-                }}
-                className="rounded-full bg-[#5856d6] px-3 py-2 text-xs font-semibold text-white"
-              >
-                Video
               </button>
               <button
                 onClick={() => setShowChatPanel((prev) => !prev)}
@@ -2187,7 +1667,7 @@ export default function CallPage() {
             </div>
           </div>
 
-          <div className={`${showChatPanel ? "h-[210px]" : "h-[170px]"} overflow-y-auto border-b border-[#ededf1] px-3 py-3`}>
+          <div className={`${showChatPanel ? "h-[360px]" : "h-[300px]"} overflow-y-auto px-3 py-3`}>
             {chatMessages.length === 0 ? (
               <div className="flex h-full items-center justify-center text-center text-sm text-[#8e8e93]">
                 No messages yet.
@@ -2228,31 +1708,6 @@ export default function CallPage() {
             )}
           </div>
 
-         <div
-  className={`${showChatPanel ? "h-[132px]" : "h-[112px]"} overflow-y-auto px-3 py-3`}
->
-            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#8e8e93]">
-              Activity Timeline
-            </div>
-            {activityTimeline.length === 0 ? (
-              <div className="text-sm text-[#8e8e93]">No activity yet.</div>
-            ) : (
-              <div className="space-y-2">
-                {activityTimeline.map((item) => (
-                  <div
-                    key={item.id}
-                    className={`rounded-2xl px-3 py-2 text-sm ${
-                      item.mine ? "bg-[#f7f7fa]" : "bg-[#eef4ff]"
-                    }`}
-                  >
-                    <div className="font-medium text-[#111111]">{item.label}</div>
-                    <div className="mt-1 text-xs text-[#8e8e93]">{item.sublabel}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
           <div className="border-t border-[#ededf1] px-3 py-3">
             <div className="flex gap-2">
               <input
@@ -2287,7 +1742,7 @@ export default function CallPage() {
 
   const renderKeypad = () => (
     <div>
-      <div className="rounded-[26px] bg-white px-4 py-4 shadow-sm">
+      <div className="rounded-[30px] bg-white px-5 py-6 shadow-sm">
         <div className="text-center">
           <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-[#8e8e93]">
             My Number
@@ -2296,7 +1751,7 @@ export default function CallPage() {
             value={myNumber}
             readOnly={Boolean(ownedSuffix)}
             onChange={(e) => setMyNumber(normalizeNumber(e.target.value))}
-            className="w-full rounded-2xl border border-[#e5e5ea] bg-[#f7f7fa] px-4 py-2.5 text-center text-base font-semibold text-[#111111] outline-none read-only:cursor-not-allowed read-only:opacity-80"
+            className="w-full rounded-2xl border border-[#e5e5ea] bg-[#f7f7fa] px-4 py-3 text-center text-lg font-semibold text-[#111111] outline-none read-only:cursor-not-allowed read-only:opacity-80"
             placeholder="+70 20 0000001"
           />
           <div className="mt-2 text-xs text-[#8e8e93]">
@@ -2310,7 +1765,7 @@ export default function CallPage() {
           <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-[#8e8e93]">
             Target Number
           </div>
-          <div className="break-all text-[28px] font-semibold tracking-[0.04em] text-[#111111]">
+          <div className="break-all text-[34px] font-semibold tracking-[0.04em] text-[#111111]">
             {targetNumber}
           </div>
         </div>
@@ -2318,7 +1773,7 @@ export default function CallPage() {
         <div className="mt-3 text-center text-sm text-[#8e8e93]">{callStatus}</div>
       </div>
 
-      <div className="mt-3 flex justify-center gap-2">
+      <div className="mt-4 flex justify-center gap-2">
         <button
           onClick={() => setShowAddContactModal(true)}
           className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-[#111111] shadow-sm"
@@ -2333,17 +1788,17 @@ export default function CallPage() {
         </button>
       </div>
 
-      <div className="mt-4 grid gap-y-3">
+      <div className="mt-6 grid gap-y-5">
         {keypadRows.map((row, rowIndex) => (
-          <div key={rowIndex} className="grid grid-cols-3 justify-items-center gap-3">
+          <div key={rowIndex} className="grid grid-cols-3 justify-items-center gap-4">
             {row.map((item) => (
               <button
                 key={item.key}
                 type="button"
                 onClick={() => appendToTarget(item.key)}
-                className="flex h-[68px] w-[68px] flex-col items-center justify-center rounded-full bg-white text-[#111111] shadow-sm transition active:scale-95"
+                className="flex h-[82px] w-[82px] flex-col items-center justify-center rounded-full bg-white text-[#111111] shadow-sm transition active:scale-95"
               >
-                <span className="text-[24px] font-medium leading-none">{item.key}</span>
+                <span className="text-[30px] font-medium leading-none">{item.key}</span>
                 <span className="mt-1 text-[10px] font-medium tracking-[0.22em] text-[#8e8e93]">
                   {item.sub}
                 </span>
@@ -2353,18 +1808,18 @@ export default function CallPage() {
         ))}
       </div>
 
-      <div className="mt-3 flex items-center justify-center gap-2">
+      <div className="mt-6 flex items-center justify-center gap-4">
         <button
           type="button"
           onClick={clearTarget}
-          className="flex h-12 min-w-[76px] items-center justify-center rounded-full bg-white px-4 text-sm font-semibold text-[#111111] shadow-sm"
+          className="flex h-14 min-w-[82px] items-center justify-center rounded-full bg-white px-5 text-sm font-semibold text-[#111111] shadow-sm"
         >
           Clear
         </button>
 
         <button
           type="button"
-          onClick={() => void placeCall()}
+          onClick={placeCall}
           disabled={
             !ownedSuffix ||
             !isValidTaurusNumber(myNumber) ||
@@ -2373,7 +1828,7 @@ export default function CallPage() {
             callPhase === "connecting" ||
             callPhase === "in-call"
           }
-          className="flex h-16 w-16 items-center justify-center rounded-full bg-[#34c759] text-2xl text-white shadow-[0_10px_22px_rgba(52,199,89,0.28)] transition active:scale-95 disabled:opacity-60"
+          className="flex h-20 w-20 items-center justify-center rounded-full bg-[#34c759] text-3xl text-white shadow-[0_12px_30px_rgba(52,199,89,0.35)] transition active:scale-95 disabled:opacity-60"
         >
           📞
         </button>
@@ -2381,28 +1836,21 @@ export default function CallPage() {
         <button
           type="button"
           onClick={deleteTarget}
-          className="flex h-12 min-w-[76px] items-center justify-center rounded-full bg-white px-4 text-sm font-semibold text-[#111111] shadow-sm"
+          className="flex h-14 min-w-[82px] items-center justify-center rounded-full bg-white px-5 text-sm font-semibold text-[#111111] shadow-sm"
         >
           Delete
         </button>
       </div>
 
-      <div className="mt-3 flex items-center justify-center gap-2">
+      <div className="mt-4 flex items-center justify-center">
         <button
           type="button"
           onClick={() => setSpeakerOn((prev) => !prev)}
-          className={`rounded-full px-3 py-1.5 text-[11px] font-semibold ${
+          className={`rounded-full px-4 py-2 text-xs font-semibold ${
             speakerOn ? "bg-[#0a84ff] text-white" : "bg-white text-[#111111]"
           } shadow-sm`}
         >
           Speaker {speakerOn ? "On" : "Off"}
-        </button>
-        <button
-          type="button"
-          disabled
-          className="rounded-full bg-[#ececf3] px-3 py-1.5 text-[11px] font-semibold text-[#8e8e93] shadow-sm"
-        >
-          Video — Coming Soon
         </button>
       </div>
     </div>
@@ -2416,36 +1864,36 @@ export default function CallPage() {
       </div>
       <div className="rounded-3xl bg-white px-4 py-4 shadow-sm">
         <div className="text-sm text-[#8e8e93]">
-Voice, message timeline, missed call badge, callback, and deep-link call/chat open are ready in this build. Video will return in a later update.
+          Web call stage complete. Voicemail can be added later.
         </div>
       </div>
     </div>
   );
 
   return (
-    <main className="min-h-screen bg-[#dfe3e8] px-2 py-2">
+    <main className="min-h-screen bg-[#dfe3e8] px-3 py-4">
       <audio ref={localAudioRef} autoPlay muted className="hidden" />
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
-      <div className="mx-auto max-w-[372px]">
-        <div className="overflow-hidden rounded-[34px] border border-black/10 bg-[#f2f2f7] shadow-[0_24px_56px_rgba(0,0,0,0.2)]">
-          <div className="flex justify-center pt-2">
-            <div className="h-5 w-24 rounded-full bg-black" />
+      <div className="mx-auto max-w-[460px]">
+        <div className="overflow-hidden rounded-[42px] border border-black/10 bg-[#f2f2f7] shadow-[0_30px_80px_rgba(0,0,0,0.22)]">
+          <div className="flex justify-center pt-3">
+            <div className="h-7 w-32 rounded-full bg-black" />
           </div>
 
-          <div className="px-2 pb-3 pt-1.5">
+          <div className="px-3 pb-4 pt-2">
             <div className="flex items-center justify-between px-2">
               <div className="text-sm font-semibold text-[#111111]">9:41</div>
               <div className="text-xs text-[#111111]">Taurus Signal ▮▮▮</div>
             </div>
 
-            <div className="mt-2 px-2">
-              <div className="text-[22px] font-bold tracking-[-0.03em] text-[#111111]">
+            <div className="mt-3 px-2">
+              <div className="text-[28px] font-bold tracking-[-0.03em] text-[#111111]">
                 Taurus Call
               </div>
             </div>
 
-            <div className="mt-3 min-h-[438px] rounded-[28px] bg-[#f2f2f7]">
+            <div className="mt-4 min-h-[520px] rounded-[34px] bg-[#f2f2f7]">
               <div className="px-1">
                 {activeTab === "favorites" && renderFavorites()}
                 {activeTab === "recents" && renderRecents()}
@@ -2456,7 +1904,7 @@ Voice, message timeline, missed call badge, callback, and deep-link call/chat op
               </div>
             </div>
 
-            <div className="mt-3 rounded-[22px] bg-white/80 px-1.5 py-1.5 shadow-sm">
+            <div className="mt-4 rounded-[28px] bg-white/80 px-2 py-2 shadow-sm">
               <div className="flex items-center justify-between gap-1">
                 {tabButton("favorites", "Favorites")}
                 {tabButton("recents", "Recents")}
@@ -2511,24 +1959,22 @@ Voice, message timeline, missed call badge, callback, and deep-link call/chat op
       {showIncomingModal && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 px-4">
           <div className="w-full max-w-sm rounded-[28px] bg-white p-6 text-center shadow-2xl">
-            <div className="text-sm text-[#8e8e93]">
-              Incoming {currentCallType === "video" ? "Video" : "Call"}
-            </div>
+            <div className="text-sm text-[#8e8e93]">Incoming Call</div>
             <div className="mt-2 text-2xl font-bold text-[#111111]">{incomingFrom}</div>
             <div className="mt-1 text-sm text-[#8e8e93]">to {myNumber}</div>
 
             <div className="mt-6 flex justify-center gap-4">
               <button
-                onClick={() => void rejectIncomingCall()}
+                onClick={rejectIncomingCall}
                 className="flex h-16 w-16 items-center justify-center rounded-full bg-[#ff3b30] text-2xl text-white"
               >
                 ✕
               </button>
               <button
-                onClick={() => void acceptIncomingCall()}
+                onClick={acceptIncomingCall}
                 className="flex h-16 w-16 items-center justify-center rounded-full bg-[#34c759] text-2xl text-white"
               >
-                {currentCallType === "video" ? "🎥" : "📞"}
+                📞
               </button>
             </div>
           </div>
@@ -2544,10 +1990,8 @@ Voice, message timeline, missed call badge, callback, and deep-link call/chat op
 
             <div className="mt-10 text-center">
               <div className="text-sm text-white/60">
-                {callPhase === "requesting-media" &&
-                  `Requesting ${currentCallType === "video" ? "camera + microphone" : "microphone"}...`}
-                {callPhase === "calling" &&
-                  `${currentCallType === "video" ? "Video calling..." : "Calling..."}`}
+                {callPhase === "requesting-media" && "Requesting microphone..."}
+                {callPhase === "calling" && "Calling..."}
                 {callPhase === "incoming" && "Incoming..."}
                 {callPhase === "connecting" && "Connecting..."}
                 {callPhase === "in-call" && "In Call"}
@@ -2567,46 +2011,10 @@ Voice, message timeline, missed call badge, callback, and deep-link call/chat op
               </div>
             </div>
 
-            <div className="mt-8 flex flex-1 flex-col items-center justify-center gap-4">
-              {currentCallType === "video" ? (
-                <>
-                  <div className="relative flex w-full max-w-[380px] flex-1 items-center justify-center overflow-hidden rounded-[32px] border border-white/10 bg-black/40">
-                    <video
-                      ref={remoteVideoRef}
-                      autoPlay
-                      playsInline
-                      className="h-full w-full object-cover"
-                    />
-                    {!remoteStreamRef.current?.getVideoTracks().length && (
-                      <div className="absolute inset-0 flex items-center justify-center text-center text-sm text-white/70">
-                        Waiting for remote video...
-                      </div>
-                    )}
-
-                    <div className="absolute bottom-4 right-4 h-28 w-20 overflow-hidden rounded-2xl border border-white/20 bg-black/60 shadow-xl">
-                      {cameraOn ? (
-                        <video
-                          ref={localVideoRef}
-                          autoPlay
-                          playsInline
-                          muted
-                          className="h-full w-full object-cover scale-x-[-1]"
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-xs text-white/80">
-                          Camera Off
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="mt-12 flex justify-center">
-                  <div className="flex h-32 w-32 items-center justify-center rounded-full bg-white/10 text-6xl shadow-[0_0_40px_rgba(255,255,255,0.08)]">
-                    📞
-                  </div>
-                </div>
-              )}
+            <div className="mt-12 flex justify-center">
+              <div className="flex h-32 w-32 items-center justify-center rounded-full bg-white/10 text-6xl shadow-[0_0_40px_rgba(255,255,255,0.08)]">
+                📞
+              </div>
             </div>
 
             <div className="mt-auto pb-8">
@@ -2633,41 +2041,18 @@ Voice, message timeline, missed call badge, callback, and deep-link call/chat op
                   </span>
                 </button>
 
-                {currentCallType === "video" ? (
-                  <button
-                    onClick={() => setCameraOn((prev) => !prev)}
-                    className={`flex h-20 flex-col items-center justify-center rounded-full ${
-                      cameraOn ? "bg-white/10" : "bg-[#0a84ff]"
-                    } backdrop-blur`}
-                  >
-                    <span className="text-2xl">📷</span>
-                    <span className="mt-1 text-xs">{cameraOn ? "Camera" : "Camera Off"}</span>
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => setActiveTab("keypad")}
-                    className="flex h-20 flex-col items-center justify-center rounded-full bg-white/10 backdrop-blur"
-                  >
-                    <span className="text-2xl">⌨️</span>
-                    <span className="mt-1 text-xs">Keypad</span>
-                  </button>
-                )}
+                <button
+                  onClick={() => setActiveTab("keypad")}
+                  className="flex h-20 flex-col items-center justify-center rounded-full bg-white/10 backdrop-blur"
+                >
+                  <span className="text-2xl">⌨️</span>
+                  <span className="mt-1 text-xs">Keypad</span>
+                </button>
               </div>
-
-              {currentCallType === "video" && (
-                <div className="mt-4 flex justify-center">
-                  <button
-                    onClick={() => void switchCamera()}
-                    className="rounded-full bg-white/10 px-4 py-3 text-sm font-semibold text-white backdrop-blur"
-                  >
-                    Switch Camera
-                  </button>
-                </div>
-              )}
 
               <div className="mt-6 flex justify-center">
                 <button
-                  onClick={() => void endCall()}
+                  onClick={endCall}
                   className="flex h-20 w-20 items-center justify-center rounded-full bg-[#ff3b30] text-3xl text-white shadow-[0_12px_30px_rgba(255,59,48,0.35)]"
                 >
                   📞
