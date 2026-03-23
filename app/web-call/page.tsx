@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { requestFCMToken, onForegroundMessage } from "../../lib/firebase";
 import { supabase } from "../../lib/client";
 
 type TabKey = "favorites" | "recents" | "contacts" | "keypad" | "voicemail";
@@ -203,10 +204,10 @@ export default function CallPage() {
   }, [incomingOffer]);
 
   useEffect(() => {
-    const storedContacts = safeJsonParse<ContactItem[]>(
-      localStorage.getItem("taurus_contacts"),
-      defaultContacts
-    );
+  const storedContacts = safeJsonParse<ContactItem[]>(
+    localStorage.getItem("taurus_contacts"),
+    defaultContacts
+  );
     const storedRecents = safeJsonParse<RecentItem[]>(
       localStorage.getItem("taurus_recents"),
       defaultRecents
@@ -219,6 +220,23 @@ export default function CallPage() {
 
     void bindOwnedNumber();
   }, []);
+
+  useEffect(() => {
+  const initFCM = async () => {
+    const token = await requestFCMToken();
+
+    if (token) {
+      console.log("🔥 Saved FCM token:", token);
+    }
+  };
+
+  initFCM();
+
+  onForegroundMessage((payload) => {
+    console.log("📩 Foreground Notification:", payload);
+   alert((payload as any)?.notification?.title || "Incoming Call");
+  });
+}, []);
 
   useEffect(() => {
     localStorage.setItem("taurus_contacts", JSON.stringify(contacts));
