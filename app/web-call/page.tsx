@@ -263,6 +263,7 @@ export default function CallPage() {
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
   const callTimeoutRef = useRef<number | null>(null);
+  const disconnectTimeoutRef = useRef<number | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const callConnectedRef = useRef(false);
   const myNumberRef = useRef(PHONE_PREFIX);
@@ -978,8 +979,16 @@ export default function CallPage() {
     }
   }
 
+  function clearDisconnectTimeout() {
+    if (disconnectTimeoutRef.current) {
+      window.clearTimeout(disconnectTimeoutRef.current);
+      disconnectTimeoutRef.current = null;
+    }
+  }
+
   function cleanupCall() {
     clearCallTimeout();
+    clearDisconnectTimeout();
 
     if (timerRef.current) {
       window.clearInterval(timerRef.current);
@@ -1268,22 +1277,30 @@ export default function CallPage() {
         currentCallStartedAtRef.current = Date.now();
         stopRingtone();
         clearCallTimeout();
+        clearDisconnectTimeout();
         setCallPhase("in-call");
         setCallStatus("Connected");
       } else if (state === "connecting") {
+        clearDisconnectTimeout();
         setCallPhase("connecting");
         setCallStatus("Connecting...");
       } else if (state === "failed") {
         stopRingtone();
         clearCallTimeout();
+        clearDisconnectTimeout();
         setCallPhase("failed");
         setCallStatus("Call failed");
       } else if (state === "disconnected") {
         stopRingtone();
         clearCallTimeout();
-        setCallPhase("failed");
-        setCallStatus("Call disconnected");
+        setCallStatus("Reconnecting...");
+        clearDisconnectTimeout();
+        disconnectTimeoutRef.current = window.setTimeout(() => {
+          setCallPhase("failed");
+          setCallStatus("Call disconnected");
+        }, 4500);
       } else if (state === "closed") {
+        clearDisconnectTimeout();
         stopRingtone();
       }
     };
@@ -1292,6 +1309,7 @@ export default function CallPage() {
       if (peer.iceConnectionState === "failed") {
         stopRingtone();
         clearCallTimeout();
+        clearDisconnectTimeout();
         setCallPhase("failed");
         setCallStatus("ICE connection failed");
       }
@@ -2290,7 +2308,7 @@ export default function CallPage() {
 
   const renderKeypad = () => (
     <div>
-      <div className="rounded-[30px] bg-white px-5 py-6 shadow-sm">
+      <div className="rounded-[26px] bg-white px-4 py-4 shadow-sm">
         <div className="text-center">
           <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-[#8e8e93]">
             My Number
@@ -2299,7 +2317,7 @@ export default function CallPage() {
             value={myNumber}
             readOnly={Boolean(ownedSuffix)}
             onChange={(e) => setMyNumber(normalizeNumber(e.target.value))}
-            className="w-full rounded-2xl border border-[#e5e5ea] bg-[#f7f7fa] px-4 py-3 text-center text-lg font-semibold text-[#111111] outline-none read-only:cursor-not-allowed read-only:opacity-80"
+            className="w-full rounded-2xl border border-[#e5e5ea] bg-[#f7f7fa] px-3 py-2.5 text-center text-base font-semibold text-[#111111] outline-none read-only:cursor-not-allowed read-only:opacity-80"
             placeholder="+70 20 0000001"
           />
           <div className="mt-2 text-xs text-[#8e8e93]">
@@ -2313,15 +2331,15 @@ export default function CallPage() {
           <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-[#8e8e93]">
             Target Number
           </div>
-          <div className="break-all text-[34px] font-semibold tracking-[0.04em] text-[#111111]">
+          <div className="break-all text-[26px] font-semibold tracking-[0.03em] text-[#111111]">
             {targetNumber}
           </div>
         </div>
 
-        <div className="mt-3 text-center text-sm text-[#8e8e93]">{callStatus}</div>
+        <div className="mt-2 text-center text-xs text-[#8e8e93]">{callStatus}</div>
       </div>
 
-      <div className="mt-4 flex justify-center gap-2">
+      <div className="mt-3 flex justify-center gap-2">
         <button
           onClick={() => setShowAddContactModal(true)}
           className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-[#111111] shadow-sm"
@@ -2336,18 +2354,18 @@ export default function CallPage() {
         </button>
       </div>
 
-      <div className="mt-6 grid gap-y-5">
+      <div className="mt-4 grid gap-y-3">
         {keypadRows.map((row, rowIndex) => (
-          <div key={rowIndex} className="grid grid-cols-3 justify-items-center gap-4">
+          <div key={rowIndex} className="grid grid-cols-3 justify-items-center gap-2.5">
             {row.map((item) => (
               <button
                 key={item.key}
                 type="button"
                 onClick={() => appendToTarget(item.key)}
-                className="flex h-[82px] w-[82px] flex-col items-center justify-center rounded-full bg-white text-[#111111] shadow-sm transition active:scale-95"
+                className="flex h-[68px] w-[68px] flex-col items-center justify-center rounded-full bg-white text-[#111111] shadow-sm transition active:scale-95"
               >
-                <span className="text-[30px] font-medium leading-none">{item.key}</span>
-                <span className="mt-1 text-[10px] font-medium tracking-[0.22em] text-[#8e8e93]">
+                <span className="text-[24px] font-medium leading-none">{item.key}</span>
+                <span className="mt-0.5 text-[9px] font-medium tracking-[0.18em] text-[#8e8e93]">
                   {item.sub}
                 </span>
               </button>
@@ -2356,11 +2374,11 @@ export default function CallPage() {
         ))}
       </div>
 
-      <div className="mt-6 flex items-center justify-center gap-4">
+      <div className="mt-3 flex items-center justify-center gap-2.5">
         <button
           type="button"
           onClick={clearTarget}
-          className="flex h-14 min-w-[82px] items-center justify-center rounded-full bg-white px-5 text-sm font-semibold text-[#111111] shadow-sm"
+          className="flex h-12 min-w-[74px] items-center justify-center rounded-full bg-white px-4 text-xs font-semibold text-[#111111] shadow-sm"
         >
           Clear
         </button>
@@ -2376,7 +2394,7 @@ export default function CallPage() {
             callPhase === "connecting" ||
             callPhase === "in-call"
           }
-          className="flex h-20 w-20 items-center justify-center rounded-full bg-[#34c759] text-3xl text-white shadow-[0_12px_30px_rgba(52,199,89,0.35)] transition active:scale-95 disabled:opacity-60"
+          className="flex h-16 w-16 items-center justify-center rounded-full bg-[#34c759] text-[28px] text-white shadow-[0_10px_24px_rgba(52,199,89,0.32)] transition active:scale-95 disabled:opacity-60"
         >
           📞
         </button>
@@ -2384,13 +2402,13 @@ export default function CallPage() {
         <button
           type="button"
           onClick={deleteTarget}
-          className="flex h-14 min-w-[82px] items-center justify-center rounded-full bg-white px-5 text-sm font-semibold text-[#111111] shadow-sm"
+          className="flex h-12 min-w-[74px] items-center justify-center rounded-full bg-white px-4 text-xs font-semibold text-[#111111] shadow-sm"
         >
           Delete
         </button>
       </div>
 
-      <div className="mt-4 flex items-center justify-center gap-3">
+      <div className="mt-3 flex items-center justify-center gap-2.5">
         <button
           type="button"
           onClick={() => setSpeakerOn((prev) => !prev)}
@@ -2434,29 +2452,29 @@ export default function CallPage() {
   );
 
   return (
-    <main className="min-h-screen bg-[#dfe3e8] px-3 py-4">
+    <main className="min-h-screen bg-[#dfe3e8] px-2 py-3">
       <audio ref={localAudioRef} autoPlay muted className="hidden" />
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
-      <div className="mx-auto max-w-[460px]">
-        <div className="overflow-hidden rounded-[42px] border border-black/10 bg-[#f2f2f7] shadow-[0_30px_80px_rgba(0,0,0,0.22)]">
-          <div className="flex justify-center pt-3">
-            <div className="h-7 w-32 rounded-full bg-black" />
+      <div className="mx-auto max-w-[380px]">
+        <div className="overflow-hidden rounded-[34px] border border-black/10 bg-[#f2f2f7] shadow-[0_24px_60px_rgba(0,0,0,0.2)]">
+          <div className="flex justify-center pt-2.5">
+            <div className="h-6 w-24 rounded-full bg-black" />
           </div>
 
-          <div className="px-3 pb-4 pt-2">
+          <div className="px-2.5 pb-3 pt-2">
             <div className="flex items-center justify-between px-2">
               <div className="text-sm font-semibold text-[#111111]">9:41</div>
               <div className="text-xs text-[#111111]">Taurus Signal ▮▮▮</div>
             </div>
 
             <div className="mt-3 px-2">
-              <div className="text-[28px] font-bold tracking-[-0.03em] text-[#111111]">
+              <div className="text-[24px] font-bold tracking-[-0.03em] text-[#111111]">
                 Taurus Call
               </div>
             </div>
 
-            <div className="mt-4 min-h-[520px] rounded-[34px] bg-[#f2f2f7]">
+            <div className="mt-3 min-h-[430px] rounded-[28px] bg-[#f2f2f7]">
               <div className="px-1">
                 {activeTab === "favorites" && renderFavorites()}
                 {activeTab === "recents" && renderRecents()}
@@ -2547,13 +2565,13 @@ export default function CallPage() {
       )}
 
       {showCallScreen && (
-        <div className="fixed inset-0 z-[60] bg-[radial-gradient(circle_at_top,rgba(65,79,255,0.32),transparent_28%),linear-gradient(180deg,#0b1228_0%,#111827_100%)] px-6 py-8 text-white">
-          <div className="mx-auto flex min-h-full max-w-[460px] flex-col">
+        <div className="fixed inset-0 z-[60] bg-[radial-gradient(circle_at_top,rgba(65,79,255,0.32),transparent_28%),linear-gradient(180deg,#0b1228_0%,#111827_100%)] px-4 py-5 text-white">
+          <div className="mx-auto flex min-h-full max-w-[380px] flex-col">
             <div className="flex justify-center pt-2">
-              <div className="h-7 w-32 rounded-full bg-black/80" />
+              <div className="h-6 w-24 rounded-full bg-black/80" />
             </div>
 
-            <div className="mt-10 text-center">
+            <div className="mt-6 text-center">
               <div className="text-sm text-white/60">
                 {callPhase === "requesting-media" &&
                   `Requesting ${currentCallType === "video" ? "camera + microphone" : "microphone"}...`}
@@ -2567,21 +2585,21 @@ export default function CallPage() {
                 {callPhase === "idle" && "Idle"}
               </div>
 
-              <div className="mt-3 text-[34px] font-bold tracking-[-0.03em]">
+              <div className="mt-2 text-[28px] font-bold tracking-[-0.03em]">
                 {activeCallName || "Unknown"}
               </div>
-              <div className="mt-2 text-base text-white/75">
+              <div className="mt-1 text-sm text-white/75">
                 {activeRemoteNumber || targetNumber}
               </div>
-              <div className="mt-3 text-sm text-[#9cc3ff]">
+              <div className="mt-2 text-xs text-[#9cc3ff]">
                 {callPhase === "in-call" ? formattedDuration : callStatus}
               </div>
             </div>
 
-            <div className="mt-8 flex flex-1 flex-col items-center justify-center gap-4">
+            <div className="mt-5 flex flex-1 flex-col items-center justify-center gap-3">
               {currentCallType === "video" ? (
                 <>
-                  <div className="relative flex w-full max-w-[380px] flex-1 items-center justify-center overflow-hidden rounded-[32px] border border-white/10 bg-black/40">
+                  <div className="relative flex w-full max-w-[320px] min-h-[260px] flex-1 items-center justify-center overflow-hidden rounded-[26px] border border-white/10 bg-black/40">
                     <video
                       ref={remoteVideoRef}
                       autoPlay
@@ -2594,7 +2612,7 @@ export default function CallPage() {
                       </div>
                     )}
 
-                    <div className="absolute bottom-4 right-4 h-28 w-20 overflow-hidden rounded-2xl border border-white/20 bg-black/60 shadow-xl">
+                    <div className="absolute bottom-3 right-3 h-24 w-16 overflow-hidden rounded-2xl border border-white/20 bg-black/60 shadow-xl">
                       {cameraOn ? (
                         <video
                           ref={localVideoRef}
@@ -2612,33 +2630,33 @@ export default function CallPage() {
                   </div>
                 </>
               ) : (
-                <div className="mt-12 flex justify-center">
-                  <div className="flex h-32 w-32 items-center justify-center rounded-full bg-white/10 text-6xl shadow-[0_0_40px_rgba(255,255,255,0.08)]">
+                <div className="mt-8 flex justify-center">
+                  <div className="flex h-24 w-24 items-center justify-center rounded-full bg-white/10 text-5xl shadow-[0_0_32px_rgba(255,255,255,0.08)]">
                     📞
                   </div>
                 </div>
               )}
             </div>
 
-            <div className="mt-auto pb-8">
-              <div className="grid grid-cols-3 gap-4">
+            <div className="mt-auto pb-5">
+              <div className="grid grid-cols-3 gap-3">
                 <button
                   onClick={() => setMuted((prev) => !prev)}
-                  className={`flex h-20 flex-col items-center justify-center rounded-full ${
+                  className={`flex h-16 flex-col items-center justify-center rounded-full ${
                     muted ? "bg-[#0a84ff]" : "bg-white/10"
                   } backdrop-blur`}
                 >
-                  <span className="text-2xl">🎙️</span>
+                  <span className="text-xl">🎙️</span>
                   <span className="mt-1 text-xs">{muted ? "Muted" : "Mute"}</span>
                 </button>
 
                 <button
                   onClick={() => setSpeakerOn((prev) => !prev)}
-                  className={`flex h-20 flex-col items-center justify-center rounded-full ${
+                  className={`flex h-16 flex-col items-center justify-center rounded-full ${
                     speakerOn ? "bg-[#0a84ff]" : "bg-white/10"
                   } backdrop-blur`}
                 >
-                  <span className="text-2xl">🔊</span>
+                  <span className="text-xl">🔊</span>
                   <span className="mt-1 text-xs">
                     {speakerOn ? "Speaker On" : "Speaker"}
                   </span>
@@ -2647,11 +2665,11 @@ export default function CallPage() {
                 {currentCallType === "video" ? (
                   <button
                     onClick={() => setCameraOn((prev) => !prev)}
-                    className={`flex h-20 flex-col items-center justify-center rounded-full ${
+                    className={`flex h-16 flex-col items-center justify-center rounded-full ${
                       cameraOn ? "bg-white/10" : "bg-[#0a84ff]"
                     } backdrop-blur`}
                   >
-                    <span className="text-2xl">📷</span>
+                    <span className="text-xl">📷</span>
                     <span className="mt-1 text-xs">{cameraOn ? "Camera" : "Camera Off"}</span>
                   </button>
                 ) : (
@@ -2659,27 +2677,27 @@ export default function CallPage() {
                     onClick={() => setActiveTab("keypad")}
                     className="flex h-20 flex-col items-center justify-center rounded-full bg-white/10 backdrop-blur"
                   >
-                    <span className="text-2xl">⌨️</span>
+                    <span className="text-xl">⌨️</span>
                     <span className="mt-1 text-xs">Keypad</span>
                   </button>
                 )}
               </div>
 
               {currentCallType === "video" && (
-                <div className="mt-4 flex justify-center">
+                <div className="mt-3 flex justify-center">
                   <button
                     onClick={() => void switchCamera()}
-                    className="rounded-full bg-white/10 px-4 py-3 text-sm font-semibold text-white backdrop-blur"
+                    className="rounded-full bg-white/10 px-4 py-2.5 text-xs font-semibold text-white backdrop-blur"
                   >
                     Switch Camera
                   </button>
                 </div>
               )}
 
-              <div className="mt-6 flex justify-center">
+              <div className="mt-4 flex justify-center">
                 <button
                   onClick={() => void endCall()}
-                  className="flex h-20 w-20 items-center justify-center rounded-full bg-[#ff3b30] text-3xl text-white shadow-[0_12px_30px_rgba(255,59,48,0.35)]"
+                  className="flex h-16 w-16 items-center justify-center rounded-full bg-[#ff3b30] text-[28px] text-white shadow-[0_10px_24px_rgba(255,59,48,0.32)]"
                 >
                   📞
                 </button>
