@@ -1,7 +1,8 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { requestFCMToken, onForegroundMessage } from "../../lib/firebase";
 import { supabase } from "../../lib/client";
 
@@ -211,7 +212,7 @@ function getRecentResultLabel(item: RecentItem) {
 }
 
 export default function CallPage() {
-  const searchParams = useSearchParams();
+ 
 
   const [activeTab, setActiveTab] = useState<TabKey>("keypad");
 
@@ -408,25 +409,28 @@ export default function CallPage() {
   }, [activeChatNumber, contacts, myNumber, targetNumber]);
 
   useEffect(() => {
-    const deepLinkTab = searchParams.get("tab");
-    const deepLinkNumber = searchParams.get("number");
-    const deepLinkIntent = searchParams.get("intent");
+  if (typeof window === "undefined") return;
 
-    if (!deepLinkNumber || !isValidTaurusNumber(normalizeNumber(deepLinkNumber))) return;
+  const params = new URLSearchParams(window.location.search);
+  const deepLinkTab = params.get("tab");
+  const deepLinkNumber = params.get("number");
+  const deepLinkIntent = params.get("intent");
 
-    const cleanNumber = normalizeNumber(deepLinkNumber);
-    setTargetNumber(cleanNumber);
+  if (!deepLinkNumber || !isValidTaurusNumber(normalizeNumber(deepLinkNumber))) return;
 
-    if (deepLinkIntent === "chat" || deepLinkTab === "messages") {
-      void openChat(cleanNumber);
-      setActiveTab("messages");
-    }
+  const cleanNumber = normalizeNumber(deepLinkNumber);
+  setTargetNumber(cleanNumber);
 
-    if (deepLinkIntent === "call") {
-      setActiveRemoteNumber(cleanNumber);
-      setActiveTab("messages");
-    }
-  }, [searchParams]);
+  if (deepLinkIntent === "chat" || deepLinkTab === "messages") {
+    void openChat(cleanNumber);
+    setActiveTab("messages");
+  }
+
+  if (deepLinkIntent === "call") {
+    setActiveRemoteNumber(cleanNumber);
+    setActiveTab("messages");
+  }
+}, []);
 
   useEffect(() => {
     if (!isValidTaurusNumber(myNumber) || !activeChatNumber) {
