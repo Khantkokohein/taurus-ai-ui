@@ -1,20 +1,21 @@
-// app/api/send-push/route.ts
-
 import { NextRequest, NextResponse } from "next/server";
 import admin from "firebase-admin";
-import fs from "fs";
-import path from "path";
 
-// 🔐 Load service account
-const serviceAccountPath = path.join(process.cwd(), "firebase-key.json");
-const serviceAccount = JSON.parse(
-  fs.readFileSync(serviceAccountPath, "utf8")
-);
+function getPrivateKey() {
+  const key = process.env.FIREBASE_PRIVATE_KEY;
+  if (!key) {
+    throw new Error("Missing FIREBASE_PRIVATE_KEY");
+  }
+  return key.replace(/\\n/g, "\n");
+}
 
-// 🔁 Init Firebase Admin (avoid duplicate)
 if (!admin.apps.length) {
   admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: getPrivateKey(),
+    }),
   });
 }
 
@@ -26,19 +27,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No token" }, { status: 400 });
     }
 
-    const message = {
+    const response = await admin.messaging().send({
       token,
       notification: {
         title: title || "Incoming Call",
         body: body || "Taurus Calling...",
       },
-    };
-
-    const response = await admin.messaging().send(message);
+    });
 
     return NextResponse.json({ success: true, response });
-  } catch (error: any) {
+  } catch (error) {
     console.error("Push error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : "Push send failed",
+      },
+      { status: 500 }
+    );
   }
 }
