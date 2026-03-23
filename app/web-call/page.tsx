@@ -42,6 +42,7 @@ type OwnershipBoundRow = {
   number_id: string | null;
   device_id: string | null;
   active: boolean | null;
+  fcm_token?: string | null;
   numbers?:
     | {
         id: string;
@@ -54,6 +55,22 @@ type OwnershipBoundRow = {
         suffix_7: string | null;
       }[]
     | null;
+};
+
+type OwnershipTokenRow = {
+  id: string;
+  fcm_token: string | null;
+  numbers:
+    | {
+        id: string;
+        number: string | null;
+        suffix_7: string | null;
+      }
+    | {
+        id: string;
+        number: string | null;
+        suffix_7: string | null;
+      }[];
 };
 
 const PHONE_PREFIX = "+70 20 ";
@@ -204,10 +221,10 @@ export default function CallPage() {
   }, [incomingOffer]);
 
   useEffect(() => {
-  const storedContacts = safeJsonParse<ContactItem[]>(
-    localStorage.getItem("taurus_contacts"),
-    defaultContacts
-  );
+    const storedContacts = safeJsonParse<ContactItem[]>(
+      localStorage.getItem("taurus_contacts"),
+      defaultContacts
+    );
     const storedRecents = safeJsonParse<RecentItem[]>(
       localStorage.getItem("taurus_recents"),
       defaultRecents
@@ -222,21 +239,31 @@ export default function CallPage() {
   }, []);
 
   useEffect(() => {
-  const initFCM = async () => {
-    const token = await requestFCMToken();
+    const initFCM = async () => {
+      const token = await requestFCMToken();
+      if (!token) return;
 
-    if (token) {
       console.log("🔥 Saved FCM token:", token);
-    }
-  };
 
-  initFCM();
+      const deviceId = getOrCreateDeviceId();
 
-  onForegroundMessage((payload) => {
-    console.log("📩 Foreground Notification:", payload);
-   alert((payload as any)?.notification?.title || "Incoming Call");
-  });
-}, []);
+      const { error } = await supabase
+        .from("ownership")
+        .update({ fcm_token: token })
+        .eq("device_id", deviceId)
+        .eq("active", true);
+
+      if (error) {
+        console.error("save fcm token error", error.message);
+      }
+    };
+
+    void initFCM();
+
+    onForegroundMessage((payload) => {
+      console.log("📩 Foreground Notification:", payload);
+    });
+  }, []);
 
   useEffect(() => {
     localStorage.setItem("taurus_contacts", JSON.stringify(contacts));
@@ -424,6 +451,7 @@ export default function CallPage() {
         number_id,
         device_id,
         active,
+        fcm_token,
         numbers:number_id (
           id,
           number,
@@ -694,7 +722,9 @@ export default function CallPage() {
           }
         });
       } else {
-        event.track && remoteStream.addTrack(event.track);
+        if (event.track) {
+          remoteStream.addTrack(event.track);
+        }
       }
 
       void attachRemoteAudio(remoteStream);
@@ -768,6 +798,61 @@ export default function CallPage() {
     return (data || []).length > 0;
   }
 
+  async function getTargetFcmToken(numberWithPrefix: string) {
+    const suffix = getSuffix(numberWithPrefix);
+
+    if (!suffix) return null;
+
+    const { data, error } = await supabase
+      .from("ownership")
+      .select(
+        `
+        id,
+        fcm_token,
+        numbers!inner (
+          id,
+          number,
+          suffix_7
+        )
+      `
+      )
+      .eq("active", true)
+      .eq("numbers.number", suffix)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.error("target token lookup error", error.message);
+      return null;
+    }
+
+    const row = data as OwnershipTokenRow | null;
+    return row?.fcm_token || null;
+  }
+
+  async function sendIncomingPush(receiverToken: string, callerNumber: string) {
+    try {
+      const response = await fetch("/api/send-push", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          token: receiverToken,
+          title: "Incoming Call",
+          body: `${callerNumber} is calling you`,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        console.error("push send failed", response.status, errorBody);
+      }
+    } catch (error) {
+      console.error("push request failed", error);
+    }
+  }
+
   async function placeCall() {
     if (!ownedSuffix || !isValidTaurusNumber(myNumber)) {
       setCallStatus("No owned number is bound to this device");
@@ -790,6 +875,11 @@ export default function CallPage() {
       if (!targetExists) {
         setCallStatus("Target number is not registered yet");
         return;
+      }
+
+      const receiverToken = await getTargetFcmToken(targetNumber);
+      if (receiverToken) {
+        await sendIncomingPush(receiverToken, myNumberRef.current);
       }
 
       sessionIdRef.current += 1;
@@ -819,10 +909,12 @@ export default function CallPage() {
       const offer = await peer.createOffer({
         offerToReceiveAudio: true,
       });
+
       if (sessionIdRef.current !== currentSessionId) return;
       if (!peerRef.current || peerRef.current !== peer) {
-  throw new Error("Peer connection already closed");
-}
+        throw new Error("Peer connection already closed");
+      }
+
       await peer.setLocalDescription(offer);
 
       addRecent(targetNumber, "outgoing");
@@ -906,8 +998,9 @@ export default function CallPage() {
 
       const answer = await peer.createAnswer();
       if (!peerRef.current || peerRef.current !== peer) {
-  throw new Error("Peer connection already closed");
-}
+        throw new Error("Peer connection already closed");
+      }
+
       await peer.setLocalDescription(answer);
 
       addRecent(currentIncomingOffer.from, "incoming");
@@ -963,7 +1056,8 @@ export default function CallPage() {
     stopRingtone();
     clearCallTimeout();
 
-    const remote = activeRemoteNumberRef.current || incomingOfferRef.current?.from || "";
+    const remote =
+      activeRemoteNumberRef.current || incomingOfferRef.current?.from || "";
 
     cleanupCall();
     setShowCallScreen(false);
@@ -1508,7 +1602,9 @@ export default function CallPage() {
                   } backdrop-blur`}
                 >
                   <span className="text-2xl">🔊</span>
-                  <span className="mt-1 text-xs">{speakerOn ? "Speaker On" : "Speaker"}</span>
+                  <span className="mt-1 text-xs">
+                    {speakerOn ? "Speaker On" : "Speaker"}
+                  </span>
                 </button>
 
                 <button
