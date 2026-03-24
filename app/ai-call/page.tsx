@@ -5,11 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const PHONE_PREFIX = "+70 20 ";
 const AI_NUMBER = "+70 20 7777777";
 const MAX_SUFFIX_DIGITS = 7;
-
-// 20 seconds before AI answers
 const AI_REPLY_DELAY_MS = 20000;
-
-// Random ringtone pool
 const RINGTONES = ["/ringtone1.mp3", "/ringtone2.mp3"];
 
 const keypadRows = [
@@ -60,8 +56,134 @@ export default function AICallPage() {
   const ringtoneRef = useRef<HTMLAudioElement | null>(null);
   const delayTimeoutRef = useRef<number | null>(null);
   const timerRef = useRef<number | null>(null);
+ const recognitionRef = useRef<any>(null);
 
   const isAiReady = useMemo(() => isValidAiNumber(targetNumber), [targetNumber]);
+
+  function speakText(
+    text: string,
+    options?: { rate?: number; pitch?: number; lang?: string; onEnd?: () => void }
+  ) {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      options?.onEnd?.();
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = options?.rate ?? 0.95;
+    utter.pitch = options?.pitch ?? 1;
+    utter.lang = options?.lang ?? "en-US";
+    utter.onend = () => options?.onEnd?.();
+
+    window.speechSynthesis.speak(utter);
+  }
+
+  function speakAccessCodeSequence() {
+    const intro = "ဟုတ်ကဲ့ လူကြီးမင်း တောင်းဆိုသော password လေးကတော့";
+    const chars = ["T", "A", "U", "R", "U", "S", "2", "0", "2", "6"];
+
+    speakText(intro, {
+      lang: "my-MM",
+      rate: 0.9,
+      onEnd: () => {
+        let index = 0;
+
+        const speakNext = () => {
+          if (index >= chars.length) return;
+
+          speakText(chars[index], {
+            lang: "en-US",
+            rate: 0.6,
+            pitch: 1,
+            onEnd: () => {
+              index += 1;
+              window.setTimeout(speakNext, 500);
+            },
+          });
+        };
+
+        window.setTimeout(speakNext, 500);
+      },
+    });
+  }
+
+  function handleCustomerQuestion(text: string) {
+    const q = text.toLowerCase().trim();
+
+    if (!q) {
+      speakText("Welcome to Taurus AI. How can I help you?", {
+        lang: "en-US",
+        rate: 0.95,
+      });
+      return;
+    }
+
+    const hasPassword =
+      q.includes("password") ||
+      q.includes("pass word") ||
+      q.includes("access code") ||
+      q.includes("code") ||
+      q.includes("pin");
+
+    if (hasPassword) {
+      speakAccessCodeSequence();
+      return;
+    }
+
+    speakText("ဝန်ဆောင်မှုကို တိုးတက်အောင် ဆက်လုပ်ဆောင်ရွက်နေပါသည်", {
+      lang: "my-MM",
+      rate: 0.9,
+    });
+  }
+
+function startListeningForQuestion() {
+  const SpeechRecognitionCtor =
+    typeof window !== "undefined"
+      ? ((window as any).SpeechRecognition ||
+         (window as any).webkitSpeechRecognition)
+      : null;
+
+  if (!SpeechRecognitionCtor) {
+    handleCustomerQuestion("");
+    return;
+  }
+
+  try {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+
+    const recognition = new SpeechRecognitionCtor();
+    recognitionRef.current = recognition;
+
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event: any) => {
+      const transcript = event?.results?.[0]?.[0]?.transcript || "";
+      handleCustomerQuestion(transcript);
+    };
+
+    recognition.onerror = () => {
+      speakText("ဝန်ဆောင်မှုကို တိုးတက်အောင် ဆက်လုပ်ဆောင်ရွက်နေပါသည်", {
+        lang: "my-MM",
+        rate: 0.9,
+      });
+    };
+
+    recognition.onend = () => {
+      recognitionRef.current = null;
+    };
+
+    recognition.start();
+  } catch {
+    handleCustomerQuestion("");
+  }
+}
 
   useEffect(() => {
     return () => {
@@ -75,6 +197,15 @@ export default function AICallPage() {
       if (timerRef.current) {
         window.clearInterval(timerRef.current);
         timerRef.current = null;
+      }
+
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
+      }
+
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
       }
     };
   }, []);
@@ -136,8 +267,6 @@ export default function AICallPage() {
 
       ringtoneRef.current.src = selectedRingtone;
       ringtoneRef.current.currentTime = 0;
-
-      // full play only
       ringtoneRef.current.loop = false;
 
       await ringtoneRef.current.play();
@@ -168,6 +297,15 @@ export default function AICallPage() {
       timerRef.current = null;
     }
 
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+
     stopRingtone();
     setCallSeconds(0);
     setShowCallScreen(true);
@@ -179,8 +317,18 @@ export default function AICallPage() {
     delayTimeoutRef.current = window.setTimeout(() => {
       stopRingtone();
       setCallStage("connected");
-      setCallText("Hello. Taurus AI line is now connected.");
+      setCallText("Welcome to Taurus AI. How can I help you?");
       setStatusText("Taurus AI answered the call");
+
+      speakText("Welcome to Taurus AI. How can I help you?", {
+        lang: "en-US",
+        rate: 0.95,
+        onEnd: () => {
+          window.setTimeout(() => {
+            startListeningForQuestion();
+          }, 800);
+        },
+      });
     }, AI_REPLY_DELAY_MS);
   }
 
@@ -204,6 +352,15 @@ export default function AICallPage() {
     if (timerRef.current) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
+    }
+
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
     }
 
     setShowCallScreen(false);
