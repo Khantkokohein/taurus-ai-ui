@@ -149,37 +149,24 @@ export default function AICallPage() {
     });
   }
 
-  function speakAccessCodeSequence() {
-    const intro = "ဟုတ်ကဲ့ လူကြီးမင်း တောင်းဆိုသော password လေးကတော့";
-    const chars = ["T", "A", "U", "R", "U", "S", "2", "0", "2", "6"];
+ function speakAccessCodeSequence() {
+  setCallText("ဟုတ်ကဲ့ လူကြီးမင်း တောင်းဆိုသော password လေးကတော့ Taurus 2026 ဖြစ်ပါတယ်");
 
-    setCallText("ဟုတ်ကဲ့ လူကြီးမင်း တောင်းဆိုသော password လေးကတော့...");
-
-    speakText(intro, {
-      lang: "my-MM",
-      rate: 0.9,
-      onEnd: () => {
-        let index = 0;
-
-        const speakNext = () => {
-          if (index >= chars.length) return;
-
-          speakText(chars[index], {
-            lang: "en-US",
-            rate: 0.6,
-            pitch: 1,
-            onEnd: () => {
-              index += 1;
-              window.setTimeout(speakNext, 500);
-            },
-          });
-        };
-
-        window.setTimeout(speakNext, 500);
-      },
-    });
-  }
-
+  speakText("ဟုတ်ကဲ့ လူကြီးမင်း တောင်းဆိုသော password လေးကတော့", {
+    lang: "my-MM",
+    rate: 0.9,
+    pitch: 1,
+    onEnd: () => {
+      setTimeout(() => {
+        speakText("Taurus 2026", {
+          lang: "en-US",
+          rate: 0.9,
+          pitch: 1,
+        });
+      }, 500);
+    },
+  });
+}
   function speakServiceMessage() {
     setCallText("ဝန်ဆောင်မှုကို တိုးတက်အောင် ဆက်လုပ်ဆောင်ရွက်နေပါသည်");
     speakText("ဝန်ဆောင်မှုကို တိုးတက်အောင် ဆက်လုပ်ဆောင်ရွက်နေပါသည်", {
