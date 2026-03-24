@@ -149,22 +149,13 @@ export default function AICallPage() {
     });
   }
 
- function speakAccessCodeSequence() {
+function speakAccessCodeSequence() {
   setCallText("ဟုတ်ကဲ့ လူကြီးမင်း တောင်းဆိုသော password လေးကတော့ Taurus 2026 ဖြစ်ပါတယ်");
 
-  speakText("ဟုတ်ကဲ့ လူကြီးမင်း တောင်းဆိုသော password လေးကတော့", {
-    lang: "my-MM",
+  speakText("Your password is Taurus 2026", {
+    lang: "en-US",
     rate: 0.9,
     pitch: 1,
-    onEnd: () => {
-      setTimeout(() => {
-        speakText("Taurus 2026", {
-          lang: "en-US",
-          rate: 0.9,
-          pitch: 1,
-        });
-      }, 500);
-    },
   });
 }
   function speakServiceMessage() {
