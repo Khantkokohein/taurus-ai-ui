@@ -56,9 +56,27 @@ export default function AICallPage() {
   const ringtoneRef = useRef<HTMLAudioElement | null>(null);
   const delayTimeoutRef = useRef<number | null>(null);
   const timerRef = useRef<number | null>(null);
- const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<any>(null);
+  const listenTimeoutRef = useRef<number | null>(null);
 
   const isAiReady = useMemo(() => isValidAiNumber(targetNumber), [targetNumber]);
+
+  function unlockSpeech() {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+
+    try {
+      const synth = window.speechSynthesis;
+      synth.cancel();
+      synth.resume();
+
+      const warmup = new SpeechSynthesisUtterance(" ");
+      warmup.volume = 0;
+      warmup.rate = 1;
+      warmup.pitch = 1;
+      warmup.lang = "en-US";
+      synth.speak(warmup);
+    } catch {}
+  }
 
   function speakText(
     text: string,
@@ -69,20 +87,73 @@ export default function AICallPage() {
       return;
     }
 
-    window.speechSynthesis.cancel();
+    const synth = window.speechSynthesis;
 
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = options?.rate ?? 0.95;
-    utter.pitch = options?.pitch ?? 1;
-    utter.lang = options?.lang ?? "en-US";
-    utter.onend = () => options?.onEnd?.();
+    const run = () => {
+      try {
+        synth.cancel();
+        synth.resume();
 
-    window.speechSynthesis.speak(utter);
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.rate = options?.rate ?? 0.95;
+        utter.pitch = options?.pitch ?? 1;
+        utter.volume = 1;
+        utter.lang = options?.lang ?? "en-US";
+
+        const voices = synth.getVoices();
+        const preferred =
+          voices.find((v) => v.lang === utter.lang) ||
+          voices.find((v) => utter.lang.startsWith("en") && v.lang.startsWith("en")) ||
+          voices[0];
+
+        if (preferred) {
+          utter.voice = preferred;
+        }
+
+        utter.onend = () => {
+          options?.onEnd?.();
+        };
+
+        utter.onerror = () => {
+          options?.onEnd?.();
+        };
+
+        synth.speak(utter);
+      } catch {
+        options?.onEnd?.();
+      }
+    };
+
+    const voices = synth.getVoices();
+    if (voices.length > 0) {
+      run();
+    } else {
+      synth.onvoiceschanged = () => {
+        run();
+        synth.onvoiceschanged = null;
+      };
+      window.setTimeout(run, 300);
+    }
+  }
+
+  function speakGreeting() {
+    setCallText("Welcome to Taurus AI. How can I help you?");
+    speakText("Welcome to Taurus AI. How can I help you?", {
+      lang: "en-US",
+      rate: 0.95,
+      onEnd: () => {
+        window.setTimeout(() => {
+          startListeningForQuestion();
+        }, 800);
+      },
+    });
   }
 
   function speakAccessCodeSequence() {
     const intro = "ဟုတ်ကဲ့ လူကြီးမင်း တောင်းဆိုသော password လေးကတော့";
     const chars = ["T", "A", "U", "R", "U", "S", "2", "0", "2", "6"];
+
+    setCallText("ဟုတ်ကဲ့ လူကြီးမင်း တောင်းဆိုသော password လေးကတော့...");
 
     speakText(intro, {
       lang: "my-MM",
@@ -109,14 +180,19 @@ export default function AICallPage() {
     });
   }
 
+  function speakServiceMessage() {
+    setCallText("ဝန်ဆောင်မှုကို တိုးတက်အောင် ဆက်လုပ်ဆောင်ရွက်နေပါသည်");
+    speakText("ဝန်ဆောင်မှုကို တိုးတက်အောင် ဆက်လုပ်ဆောင်ရွက်နေပါသည်", {
+      lang: "my-MM",
+      rate: 0.9,
+    });
+  }
+
   function handleCustomerQuestion(text: string) {
     const q = text.toLowerCase().trim();
 
     if (!q) {
-      speakText("Welcome to Taurus AI. How can I help you?", {
-        lang: "en-US",
-        rate: 0.95,
-      });
+      speakGreeting();
       return;
     }
 
@@ -132,62 +208,76 @@ export default function AICallPage() {
       return;
     }
 
-    speakText("ဝန်ဆောင်မှုကို တိုးတက်အောင် ဆက်လုပ်ဆောင်ရွက်နေပါသည်", {
-      lang: "my-MM",
-      rate: 0.9,
-    });
+    speakServiceMessage();
   }
 
-function startListeningForQuestion() {
-  const SpeechRecognitionCtor =
-    typeof window !== "undefined"
-      ? ((window as any).SpeechRecognition ||
-         (window as any).webkitSpeechRecognition)
-      : null;
-
-  if (!SpeechRecognitionCtor) {
-    handleCustomerQuestion("");
-    return;
+  function clearListeningTimeout() {
+    if (listenTimeoutRef.current) {
+      window.clearTimeout(listenTimeoutRef.current);
+      listenTimeoutRef.current = null;
+    }
   }
 
-  try {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
+  function startListeningForQuestion() {
+    clearListeningTimeout();
+
+    const SpeechRecognitionCtor =
+      typeof window !== "undefined"
+        ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+        : null;
+
+    if (!SpeechRecognitionCtor) {
+      setCallText("Speech input is limited on this device. Tap AI Line for password.");
+      return;
     }
 
-    const recognition = new SpeechRecognitionCtor();
-    recognitionRef.current = recognition;
+    try {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
+      }
 
-    recognition.lang = "en-US";
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
+      const recognition = new SpeechRecognitionCtor();
+      recognitionRef.current = recognition;
+      recognition.lang = "en-US";
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
 
-    recognition.onresult = (event: any) => {
-      const transcript = event?.results?.[0]?.[0]?.transcript || "";
-      handleCustomerQuestion(transcript);
-    };
+      recognition.onresult = (event: any) => {
+        clearListeningTimeout();
+        const transcript = event?.results?.[0]?.[0]?.transcript || "";
+        handleCustomerQuestion(transcript);
+      };
 
-    recognition.onerror = () => {
-      speakText("ဝန်ဆောင်မှုကို တိုးတက်အောင် ဆက်လုပ်ဆောင်ရွက်နေပါသည်", {
-        lang: "my-MM",
-        rate: 0.9,
-      });
-    };
+      recognition.onerror = () => {
+        clearListeningTimeout();
+        speakServiceMessage();
+      };
 
-    recognition.onend = () => {
-      recognitionRef.current = null;
-    };
+      recognition.onend = () => {
+        recognitionRef.current = null;
+      };
 
-    recognition.start();
-  } catch {
-    handleCustomerQuestion("");
+      recognition.start();
+
+      listenTimeoutRef.current = window.setTimeout(() => {
+        if (recognitionRef.current) {
+          try {
+            recognitionRef.current.stop();
+          } catch {}
+          recognitionRef.current = null;
+        }
+        setCallText("No voice detected. Tap Mic and say password, or tap AI Line.");
+      }, 6000);
+    } catch {
+      speakServiceMessage();
+    }
   }
-}
 
   useEffect(() => {
     return () => {
       stopRingtone();
+      clearListeningTimeout();
 
       if (delayTimeoutRef.current) {
         window.clearTimeout(delayTimeoutRef.current);
@@ -200,7 +290,9 @@ function startListeningForQuestion() {
       }
 
       if (recognitionRef.current) {
-        recognitionRef.current.stop();
+        try {
+          recognitionRef.current.stop();
+        } catch {}
         recognitionRef.current = null;
       }
 
@@ -297,8 +389,12 @@ function startListeningForQuestion() {
       timerRef.current = null;
     }
 
+    clearListeningTimeout();
+
     if (recognitionRef.current) {
-      recognitionRef.current.stop();
+      try {
+        recognitionRef.current.stop();
+      } catch {}
       recognitionRef.current = null;
     }
 
@@ -306,6 +402,7 @@ function startListeningForQuestion() {
       window.speechSynthesis.cancel();
     }
 
+    unlockSpeech();
     stopRingtone();
     setCallSeconds(0);
     setShowCallScreen(true);
@@ -317,18 +414,11 @@ function startListeningForQuestion() {
     delayTimeoutRef.current = window.setTimeout(() => {
       stopRingtone();
       setCallStage("connected");
-      setCallText("Welcome to Taurus AI. How can I help you?");
       setStatusText("Taurus AI answered the call");
 
-      speakText("Welcome to Taurus AI. How can I help you?", {
-        lang: "en-US",
-        rate: 0.95,
-        onEnd: () => {
-          window.setTimeout(() => {
-            startListeningForQuestion();
-          }, 800);
-        },
-      });
+      window.setTimeout(() => {
+        speakGreeting();
+      }, 300);
     }, AI_REPLY_DELAY_MS);
   }
 
@@ -341,8 +431,27 @@ function startListeningForQuestion() {
     setStatusText("Taurus AI message screen will be added in next step.");
   }
 
+  function handleMicTap() {
+    if (callStage !== "connected") return;
+    unlockSpeech();
+    startListeningForQuestion();
+  }
+
+  function handleAudioTap() {
+    if (callStage !== "connected") return;
+    unlockSpeech();
+    speakGreeting();
+  }
+
+  function handleAiLineTap() {
+    if (callStage !== "connected") return;
+    unlockSpeech();
+    speakAccessCodeSequence();
+  }
+
   function endCall() {
     stopRingtone();
+    clearListeningTimeout();
 
     if (delayTimeoutRef.current) {
       window.clearTimeout(delayTimeoutRef.current);
@@ -355,7 +464,9 @@ function startListeningForQuestion() {
     }
 
     if (recognitionRef.current) {
-      recognitionRef.current.stop();
+      try {
+        recognitionRef.current.stop();
+      } catch {}
       recognitionRef.current = null;
     }
 
@@ -617,20 +728,32 @@ function startListeningForQuestion() {
 
             <div className="mt-auto pb-8">
               <div className="grid grid-cols-3 gap-4">
-                <div className="flex h-20 flex-col items-center justify-center rounded-full bg-white/10 backdrop-blur">
+                <button
+                  type="button"
+                  onClick={handleMicTap}
+                  className="flex h-20 flex-col items-center justify-center rounded-full bg-white/10 backdrop-blur active:scale-95"
+                >
                   <span className="text-2xl">🎙️</span>
                   <span className="mt-1 text-xs">Mic</span>
-                </div>
+                </button>
 
-                <div className="flex h-20 flex-col items-center justify-center rounded-full bg-white/10 backdrop-blur">
+                <button
+                  type="button"
+                  onClick={handleAudioTap}
+                  className="flex h-20 flex-col items-center justify-center rounded-full bg-white/10 backdrop-blur active:scale-95"
+                >
                   <span className="text-2xl">🔊</span>
                   <span className="mt-1 text-xs">Audio</span>
-                </div>
+                </button>
 
-                <div className="flex h-20 flex-col items-center justify-center rounded-full bg-white/10 backdrop-blur">
+                <button
+                  type="button"
+                  onClick={handleAiLineTap}
+                  className="flex h-20 flex-col items-center justify-center rounded-full bg-white/10 backdrop-blur active:scale-95"
+                >
                   <span className="text-2xl">✨</span>
                   <span className="mt-1 text-xs">AI Line</span>
-                </div>
+                </button>
               </div>
 
               <div className="mt-6 flex justify-center">
@@ -640,6 +763,12 @@ function startListeningForQuestion() {
                 >
                   📞
                 </button>
+              </div>
+
+              <div className="mt-8 flex justify-center">
+                <div className="rounded-full border border-[#284a8f] bg-[#0b1632]/70 px-8 py-3 text-xl font-semibold tracking-tight text-white shadow-[0_0_25px_rgba(34,85,170,0.18)]">
+                  taurusai.site
+                </div>
               </div>
             </div>
           </div>
