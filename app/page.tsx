@@ -1,8 +1,18 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect } from "react";
 
 export default function Home() {
+
+useEffect(() => {
+    const access = localStorage.getItem("taurus_access");
+
+    if (access !== "granted") {
+      window.location.href = "/login-gate";
+    }
+  }, []);
+
   const brands = [
     {
       name: "Taurus AI Recruitment",
@@ -286,7 +296,7 @@ export default function Home() {
             </div>
           </div>
         </div>
-      </section>
+           </section>
     </main>
   );
 }
