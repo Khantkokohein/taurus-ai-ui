@@ -51,7 +51,6 @@ export default function AICallPage() {
   );
 
   const smsListRef = useRef<HTMLDivElement | null>(null);
-  const connectTimeoutRef = useRef<number | null>(null);
   const durationTimerRef = useRef<number | null>(null);
   const ringtoneTimeoutRef = useRef<number | null>(null);
 
@@ -68,7 +67,7 @@ export default function AICallPage() {
   }, [callSeconds]);
 
   useEffect(() => {
-    ringtone1Ref.current = new Audio("/ringtone-1.mp3");
+    ringtone1Ref.current = new Audio("/ring3tone-1.mp");
     ringtone2Ref.current = new Audio("/ringtone-2.mp3");
     greetingRef.current = new Audio("/greeting.mp3");
 
@@ -121,7 +120,6 @@ export default function AICallPage() {
 
   useEffect(() => {
     const volume = speakerOn ? 1 : 0.15;
-
     if (ringtone1Ref.current) ringtone1Ref.current.volume = volume;
     if (ringtone2Ref.current) ringtone2Ref.current.volume = volume;
     if (greetingRef.current) greetingRef.current.volume = volume;
@@ -129,9 +127,7 @@ export default function AICallPage() {
 
   useEffect(() => {
     if (muteOn) {
-      if (window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-      }
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
       if (greetingRef.current) {
         greetingRef.current.pause();
         greetingRef.current.currentTime = 0;
@@ -141,7 +137,6 @@ export default function AICallPage() {
 
   useEffect(() => {
     return () => {
-      if (connectTimeoutRef.current) window.clearTimeout(connectTimeoutRef.current);
       if (durationTimerRef.current) window.clearInterval(durationTimerRef.current);
       if (ringtoneTimeoutRef.current) window.clearTimeout(ringtoneTimeoutRef.current);
       stopAllAudio();
@@ -158,14 +153,17 @@ export default function AICallPage() {
     );
   }, []);
 
-  const safePlay = useCallback(async (audio: HTMLAudioElement | null) => {
-    if (!audio || muteOn) return;
-    try {
-      await audio.play();
-    } catch {
-      // ignore autoplay/play promise errors on some browsers
-    }
-  }, [muteOn]);
+  const safePlay = useCallback(
+    async (audio: HTMLAudioElement | null) => {
+      if (!audio || muteOn) return;
+      try {
+        await audio.play();
+      } catch {
+        // ignore
+      }
+    },
+    [muteOn]
+  );
 
   const speakFallbackGreeting = useCallback(() => {
     if (muteOn || typeof window === "undefined" || !window.speechSynthesis) return;
@@ -193,32 +191,32 @@ export default function AICallPage() {
     speakFallbackGreeting();
   }, [muteOn, safePlay, speakFallbackGreeting]);
 
-  const beginConnectedState = useCallback(async (number: string) => {
-    stopAllAudio();
-    setActiveNumber(number);
-    setCallState("connected");
-    setStatusText("Connected");
-    setCallSeconds(0);
-    setSmsMessages([
-      {
-        role: "assistant",
-        content: GREETING_TEXT,
-      },
-    ]);
-    await playGreetingSequence();
-  }, [playGreetingSequence, stopAllAudio]);
+  const beginConnectedState = useCallback(
+    async (number: string) => {
+      stopAllAudio();
+      setActiveNumber(number);
+      setCallState("connected");
+      setStatusText("Connected");
+      setCallSeconds(0);
+      setSmsMessages([
+        {
+          role: "assistant",
+          content: GREETING_TEXT,
+        },
+      ]);
+      await playGreetingSequence();
+    },
+    [playGreetingSequence, stopAllAudio]
+  );
 
   const startCall = useCallback(
     async (number?: string) => {
       const target = (number || dialNumber || DEFAULT_NUMBER).trim();
 
-      if (connectTimeoutRef.current) window.clearTimeout(connectTimeoutRef.current);
       if (ringtoneTimeoutRef.current) window.clearTimeout(ringtoneTimeoutRef.current);
       if (durationTimerRef.current) window.clearInterval(durationTimerRef.current);
 
-      if (window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-      }
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
 
       setShowDialPad(false);
       setCallState("ringing");
@@ -238,17 +236,13 @@ export default function AICallPage() {
   );
 
   const endCall = useCallback(() => {
-    if (connectTimeoutRef.current) window.clearTimeout(connectTimeoutRef.current);
     if (ringtoneTimeoutRef.current) window.clearTimeout(ringtoneTimeoutRef.current);
     if (durationTimerRef.current) window.clearInterval(durationTimerRef.current);
 
-    connectTimeoutRef.current = null;
     ringtoneTimeoutRef.current = null;
     durationTimerRef.current = null;
 
-    if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
 
     stopAllAudio();
     setCallState("idle");
