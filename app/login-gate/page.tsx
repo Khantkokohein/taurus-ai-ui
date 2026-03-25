@@ -10,21 +10,19 @@ export default function LoginGate() {
   const [code, setCode] = useState("");
 
   const handleLogin = () => {
-    // simple demo code (နောက်မှ DB ချိတ်လို့ရ)
     if (code === "7777") {
-      router.push("/"); // 👉 app/page.tsx (main)
+      router.push("/");
     } else {
       alert("Invalid Code");
     }
   };
 
   const handleCall = () => {
-    router.push("/call-ai"); // 👉 call AI page
+    router.push("/ai-call");
   };
 
   return (
     <div className="relative w-full h-screen bg-black overflow-hidden text-white">
-      {/* ===== TOP BUTTONS ===== */}
       <div className="absolute top-5 left-0 right-0 flex justify-between px-6 z-20">
         <button
           onClick={() => setShowModal(true)}
@@ -41,12 +39,10 @@ export default function LoginGate() {
         </button>
       </div>
 
-      {/* ===== CENTER 3D ORB ===== */}
       <div className="absolute inset-0 flex items-center justify-center">
         <div className="w-40 h-40 rounded-full bg-gradient-to-br from-purple-400 via-pink-300 to-blue-400 blur-[2px] animate-pulse shadow-[0_0_80px_rgba(255,255,255,0.2)]" />
       </div>
 
-      {/* ===== TEXT ===== */}
       <div className="absolute left-10 bottom-20 z-10">
         <h1 className="text-4xl font-light tracking-wide">
           Taurus AI
@@ -55,7 +51,6 @@ export default function LoginGate() {
         </h1>
       </div>
 
-      {/* ===== LOGIN MODAL ===== */}
       {showModal && (
         <div className="absolute inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-30">
           <div className="bg-white/10 border border-white/20 rounded-2xl p-6 w-[300px] text-center">

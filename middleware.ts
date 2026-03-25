@@ -4,16 +4,16 @@ import type { NextRequest } from "next/server";
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  const isAllowedPath =
+  const allowedPaths =
     pathname === "/login-gate" ||
-    pathname === "/call-ai" ||
-    pathname.startsWith("/api") ||
-    pathname.startsWith("/_next") ||
-    pathname.startsWith("/sounds") ||
+    pathname === "/ai-call" ||
+    pathname.startsWith("/api/") ||
+    pathname.startsWith("/_next/") ||
+    pathname.startsWith("/sounds/") ||
     pathname === "/favicon.ico" ||
-    pathname.match(/\.(png|jpg|jpeg|gif|webp|svg|mp3|wav|ico)$/);
+    /\.(png|jpg|jpeg|gif|webp|svg|mp3|wav|ico)$/.test(pathname);
 
-  if (isAllowedPath) {
+  if (allowedPaths) {
     return NextResponse.next();
   }
 
@@ -21,5 +21,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!.*\\..*).*)", "/", "/(api|trpc)(.*)"],
+  matcher: ["/:path*"],
 };
