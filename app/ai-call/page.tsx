@@ -1,461 +1,503 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 
-declare global {
-  interface Window {
-    webkitSpeechRecognition?: any;
-    SpeechRecognition?: any;
-  }
-}
+type CallState =
+  | "idle"
+  | "dialing"
+  | "ringing"
+  | "connecting"
+  | "connected"
+  | "ended";
 
-const SUPPORT_NUMBER = "+70 20 7777777";
+type VoiceState = "silent" | "listening" | "speaking";
 
-export default function AiCallPage() {
-  const router = useRouter();
+const RING_DURATION_SECONDS = 20;
+const FREE_CALL_DURATION_SECONDS = 5 * 60;
+const TAURUS_GREETING =
+  "Hello, I am Taurus AI. Your support line is now connected. How can I help you today?";
 
-  const [digits, setDigits] = useState(SUPPORT_NUMBER);
-  const [isCalling, setIsCalling] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
-  const [aiReply, setAiReply] = useState("");
-  const [transcript, setTranscript] = useState("");
-  const [isAiSpeaking, setIsAiSpeaking] = useState(false);
+export default function AICallPage() {
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [callState, setCallState] = useState<CallState>("idle");
+  const [voiceState, setVoiceState] = useState<VoiceState>("silent");
+  const [ringCountdown, setRingCountdown] = useState(RING_DURATION_SECONDS);
+  const [sessionSecondsLeft, setSessionSecondsLeft] = useState(FREE_CALL_DURATION_SECONDS);
+  const [statusText, setStatusText] = useState("Enter a number to start your Taurus AI call.");
+  const [micReady, setMicReady] = useState(false);
+  const [errorText, setErrorText] = useState("");
+  const [currentRingtonePath, setCurrentRingtonePath] = useState("");
 
-  const ring1Ref = useRef<HTMLAudioElement | null>(null);
-  const ring2Ref = useRef<HTMLAudioElement | null>(null);
-  const ringIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const answerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ringtoneRef = useRef<HTMLAudioElement | null>(null);
+  const ringTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recognitionRef = useRef<any>(null);
-  const mountedRef = useRef(true);
+  const speechSynthesisRef = useRef<SpeechSynthesis | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const isMountedRef = useRef(true);
+
+  const ringtones = useMemo(
+    () => ["/ringtone-1.mp3", "/ringtone-2.mp3"],
+    []
+  );
 
   useEffect(() => {
-    mountedRef.current = true;
-
-    ring1Ref.current = new Audio("/sounds/ring1.mp3");
-    ring2Ref.current = new Audio("/sounds/ring2.mp3");
-
-    if (ring1Ref.current) ring1Ref.current.preload = "auto";
-    if (ring2Ref.current) ring2Ref.current.preload = "auto";
-
+    speechSynthesisRef.current = typeof window !== "undefined" ? window.speechSynthesis : null;
     return () => {
-      mountedRef.current = false;
+      isMountedRef.current = false;
       stopAllAudio();
       stopRecognition();
-
-      if (ringIntervalRef.current) clearInterval(ringIntervalRef.current);
-      if (answerTimeoutRef.current) clearTimeout(answerTimeoutRef.current);
-
-      try {
-        window.speechSynthesis.cancel();
-      } catch {}
+      stopTimers();
+      stopMediaStream();
     };
   }, []);
 
-  const stopAllAudio = () => {
-    if (ring1Ref.current) {
-      ring1Ref.current.pause();
-      ring1Ref.current.currentTime = 0;
-    }
-    if (ring2Ref.current) {
-      ring2Ref.current.pause();
-      ring2Ref.current.currentTime = 0;
-    }
-  };
+  const formattedRingCountdown = formatClock(ringCountdown);
+  const formattedSessionCountdown = formatClock(sessionSecondsLeft);
 
-  const stopRecognition = () => {
+  function formatPhoneNumber(value: string) {
+    return value.replace(/[^\d+\-()\s]/g, "").slice(0, 22);
+  }
+
+  function randomRingtone() {
+    return ringtones[Math.floor(Math.random() * ringtones.length)];
+  }
+
+  function stopTimers() {
+    if (ringTimerRef.current) clearInterval(ringTimerRef.current);
+    if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+    ringTimerRef.current = null;
+    sessionTimerRef.current = null;
+  }
+
+  function stopMediaStream() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }
+
+  function stopAllAudio() {
+    if (ringtoneRef.current) {
+      ringtoneRef.current.pause();
+      ringtoneRef.current.currentTime = 0;
+    }
+    if (speechSynthesisRef.current) {
+      speechSynthesisRef.current.cancel();
+    }
+  }
+
+  function stopRecognition() {
     try {
       recognitionRef.current?.stop?.();
     } catch {}
-  };
+  }
 
-  const speakText = async (text: string) => {
-    return new Promise<void>((resolve) => {
-      if (!("speechSynthesis" in window)) {
-        resolve();
-        return;
-      }
+  async function prepareMic() {
+    try {
+      setErrorText("");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
+      streamRef.current = stream;
+      setMicReady(true);
+      return true;
+    } catch (error) {
+      console.error(error);
+      setErrorText("Microphone permission is required for Taurus AI voice support.");
+      setMicReady(false);
+      return false;
+    }
+  }
 
-      try {
-        window.speechSynthesis.cancel();
-      } catch {}
+  async function startCall() {
+    if (!phoneNumber.trim()) {
+      setErrorText("Please enter a phone number first.");
+      return;
+    }
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1;
-      utterance.pitch = 1;
-      utterance.volume = 1;
+    const ok = await prepareMic();
+    if (!ok) return;
 
-      const voices = window.speechSynthesis.getVoices();
-      const preferred =
-        voices.find((v) => /my|burmese|myanmar/i.test(`${v.lang} ${v.name}`)) ||
-        voices.find((v) => /en/i.test(v.lang)) ||
-        voices[0];
+    const selected = randomRingtone();
+    setCurrentRingtonePath(selected);
+    setRingCountdown(RING_DURATION_SECONDS);
+    setSessionSecondsLeft(FREE_CALL_DURATION_SECONDS);
+    setCallState("dialing");
+    setVoiceState("silent");
+    setStatusText("Dialing Taurus AI support...");
 
-      if (preferred) utterance.voice = preferred;
-
-      utterance.onstart = () => setIsAiSpeaking(true);
-      utterance.onend = () => {
-        setIsAiSpeaking(false);
-        resolve();
-      };
-      utterance.onerror = () => {
-        setIsAiSpeaking(false);
-        resolve();
-      };
-
-      window.speechSynthesis.speak(utterance);
+    requestAnimationFrame(() => {
+      setCallState("ringing");
+      setStatusText("Calling... please wait while Taurus AI answers.");
+      playRingtone(selected);
+      beginRingCountdown();
     });
-  };
+  }
 
-  const startListening = () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
+  function playRingtone(path: string) {
+    if (!ringtoneRef.current) return;
+    ringtoneRef.current.src = path;
+    ringtoneRef.current.loop = true;
+    ringtoneRef.current.play().catch((error) => {
+      console.error("Ringtone playback failed:", error);
+      setErrorText("Ringtone could not play. Check the audio files in /public.");
+    });
+  }
 
-    stopRecognition();
+  function beginRingCountdown() {
+    stopTimers();
+
+    ringTimerRef.current = setInterval(() => {
+      setRingCountdown((prev) => {
+        if (prev <= 1) {
+          if (ringTimerRef.current) clearInterval(ringTimerRef.current);
+          ringTimerRef.current = null;
+          answerCall();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }
+
+  function answerCall() {
+    if (!isMountedRef.current) return;
+
+    setCallState("connecting");
+    setStatusText("Taurus AI is connecting...");
+
+    if (ringtoneRef.current) {
+      ringtoneRef.current.pause();
+      ringtoneRef.current.currentTime = 0;
+    }
+
+    setTimeout(() => {
+      if (!isMountedRef.current) return;
+      setCallState("connected");
+      setStatusText("Connected. Taurus AI is ready.");
+      speakText(TAURUS_GREETING, () => {
+        startVoiceLoop();
+      });
+      beginSessionTimer();
+    }, 900);
+  }
+
+  function beginSessionTimer() {
+    sessionTimerRef.current = setInterval(() => {
+      setSessionSecondsLeft((prev) => {
+        if (prev <= 1) {
+          if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+          sessionTimerRef.current = null;
+          endCall("Your 5 minute free Taurus AI call has ended.");
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }
+
+  function speakText(text: string, onEnd?: () => void) {
+    if (!speechSynthesisRef.current) return;
+
+    speechSynthesisRef.current.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-US";
+    utterance.rate = 1;
+    utterance.pitch = 1;
+
+    utterance.onstart = () => {
+      setVoiceState("speaking");
+      setStatusText("Taurus AI is speaking...");
+    };
+
+    utterance.onend = () => {
+      setVoiceState("silent");
+      setStatusText("Connected. Listening...");
+      onEnd?.();
+    };
+
+    speechSynthesisRef.current.speak(utterance);
+  }
+
+  function createRecognition() {
+    const SR =
+      typeof window !== "undefined"
+        ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+        : null;
+
+    if (!SR) {
+      setErrorText("This browser does not support Speech Recognition.");
+      return null;
+    }
 
     const recognition = new SR();
-    recognition.lang = navigator.language || "en-US";
-    recognition.continuous = false;
+    recognition.lang = "en-US";
+    recognition.continuous = true;
     recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      setVoiceState("listening");
+      setStatusText("Listening...");
+    };
 
     recognition.onresult = async (event: any) => {
-      const text = event?.results?.[0]?.[0]?.transcript?.trim?.() || "";
-      if (!text) return;
-
-      setTranscript(text);
+      const result = event.results?.[event.results.length - 1]?.[0]?.transcript?.trim();
+      if (!result) return;
 
       try {
-        const res = await fetch("/api/call-ai", {
+        stopRecognition();
+        setVoiceState("silent");
+        setStatusText("Taurus AI is thinking...");
+
+        const response = await fetch("/api/ai-call", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            message: text,
-            language: navigator.language || "en-US",
-            supportNumber: SUPPORT_NUMBER,
+            prompt: result,
+            phoneNumber,
+            mode: "voice_support",
           }),
         });
 
-        const data = await res.json();
-        const reply =
-          data?.reply || "Hello. Taurus AI support is ready to help you.";
-        setAiReply(reply);
-        await speakText(reply);
+        const data = await response.json();
+        const answer = data?.text || "I am here and listening.";
 
-        if (mountedRef.current && isConnected) {
-          setTimeout(() => {
-            if (mountedRef.current && isConnected) {
-              startListening();
-            }
-          }, 500);
-        }
-      } catch {
-        const fallback = "Sorry, please say that again.";
-        setAiReply(fallback);
-        await speakText(fallback);
-
-        if (mountedRef.current && isConnected) {
-          setTimeout(() => {
-            if (mountedRef.current && isConnected) {
-              startListening();
-            }
-          }, 500);
+        speakText(answer, () => {
+          if (callState === "connected") {
+            startVoiceLoop();
+          }
+        });
+      } catch (error) {
+        console.error(error);
+        setErrorText("AI response failed.");
+        if (callState === "connected") {
+          startVoiceLoop();
         }
       }
     };
 
     recognition.onerror = () => {
-      if (mountedRef.current && isConnected) {
-        setTimeout(() => {
-          if (mountedRef.current && isConnected) {
-            startListening();
-          }
-        }, 700);
+      if (callState === "connected") {
+        setVoiceState("silent");
+        setStatusText("Connected. Listening...");
+        setTimeout(() => startVoiceLoop(), 700);
       }
     };
 
-    recognitionRef.current = recognition;
-    recognition.start();
-  };
-
-  const startRingLoop = () => {
-    let toggle = false;
-
-    const playNext = () => {
-      if (toggle) {
-        ring1Ref.current?.play().catch(() => {});
-      } else {
-        ring2Ref.current?.play().catch(() => {});
+    recognition.onend = () => {
+      if (callState === "connected" && voiceState !== "speaking") {
+        setTimeout(() => startVoiceLoop(), 400);
       }
-      toggle = !toggle;
     };
 
-    playNext();
+    return recognition;
+  }
 
-    if (ringIntervalRef.current) clearInterval(ringIntervalRef.current);
-    ringIntervalRef.current = setInterval(() => {
-      playNext();
-    }, 2000);
-  };
+  function startVoiceLoop() {
+    if (callState !== "connected") return;
+    if (speechSynthesisRef.current?.speaking) return;
 
-  const handleCall = async () => {
-    if (isCalling || isConnected) return;
-
-    setDigits(SUPPORT_NUMBER);
-    setTranscript("");
-    setAiReply("");
-    setIsCalling(true);
-    setIsConnected(false);
-
-    startRingLoop();
-
-    if (answerTimeoutRef.current) clearTimeout(answerTimeoutRef.current);
-    answerTimeoutRef.current = setTimeout(async () => {
-      stopAllAudio();
-      if (ringIntervalRef.current) clearInterval(ringIntervalRef.current);
-      ringIntervalRef.current = null;
-
-      setIsCalling(false);
-      setIsConnected(true);
-
-      const intro = "Hello, Taurus AI Support. How can I help you today?";
-      setAiReply(intro);
-      await speakText(intro);
-      startListening();
-    }, 20000);
-  };
-
-  const handleEnd = () => {
-    stopAllAudio();
-    stopRecognition();
-
-    if (ringIntervalRef.current) clearInterval(ringIntervalRef.current);
-    if (answerTimeoutRef.current) clearTimeout(answerTimeoutRef.current);
-
-    ringIntervalRef.current = null;
-    answerTimeoutRef.current = null;
+    if (!recognitionRef.current) {
+      recognitionRef.current = createRecognition();
+    }
 
     try {
-      window.speechSynthesis.cancel();
+      recognitionRef.current?.start?.();
     } catch {}
+  }
 
-    setIsCalling(false);
-    setIsConnected(false);
-    setIsAiSpeaking(false);
-  };
+  function endCall(customMessage?: string) {
+    stopTimers();
+    stopAllAudio();
+    stopRecognition();
+    stopMediaStream();
+    setCallState("ended");
+    setVoiceState("silent");
+    setMicReady(false);
+    setStatusText(customMessage || "Call ended.");
+  }
 
-  const dialKeys = [
-    { n: "1", s: "" },
-    { n: "2", s: "ABC" },
-    { n: "3", s: "DEF" },
-    { n: "4", s: "GHI" },
-    { n: "5", s: "JKL" },
-    { n: "6", s: "MNO" },
-    { n: "7", s: "PQRS" },
-    { n: "8", s: "TUV" },
-    { n: "9", s: "WXYZ" },
-    { n: "*", s: "" },
-    { n: "0", s: "+" },
-    { n: "#", s: "" },
-  ];
+  function resetCall() {
+    stopTimers();
+    stopAllAudio();
+    stopRecognition();
+    stopMediaStream();
+    setCallState("idle");
+    setVoiceState("silent");
+    setRingCountdown(RING_DURATION_SECONDS);
+    setSessionSecondsLeft(FREE_CALL_DURATION_SECONDS);
+    setStatusText("Enter a number to start your Taurus AI call.");
+    setErrorText("");
+    setMicReady(false);
+    setCurrentRingtonePath("");
+  }
+
+  const canStart = callState === "idle" || callState === "ended";
 
   return (
-    <main className="min-h-screen bg-black text-white">
-      <div className="mx-auto flex min-h-screen w-full max-w-md flex-col px-4 pt-6 pb-8">
-        <div className="mb-3 flex items-center justify-between">
-          <div className="text-3xl font-semibold tracking-tight">12:41</div>
-          <button
-            onClick={() => router.push("/login-gate")}
-            className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/85"
+    <main className="relative min-h-screen overflow-hidden bg-black text-white">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.07),transparent_25%),radial-gradient(circle_at_50%_50%,rgba(0,229,255,0.08),transparent_20%),radial-gradient(circle_at_50%_60%,rgba(175,82,222,0.10),transparent_22%)]" />
+      <div className="absolute inset-0 opacity-[0.04] [background-image:linear-gradient(rgba(255,255,255,0.2)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.2)_1px,transparent_1px)] [background-size:72px_72px]" />
+
+      <audio ref={ringtoneRef} preload="auto" />
+
+      <header className="relative z-20 flex items-center justify-between px-6 py-5 md:px-10">
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.4em] text-white/50">Taurus AI</p>
+          <h1 className="mt-2 text-sm font-medium tracking-[0.28em] text-white/90">
+            AI CALL INTERFACE
+          </h1>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Link
+            href="/login-gate"
+            className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/80 transition hover:bg-white/10"
           >
-            Back
-          </button>
-        </div>
-
-        <div className="mb-4 mt-3 flex flex-col items-center">
-          <div className="text-center">
-            <h1 className="text-[28px] font-medium tracking-wide">
-              Taurus Ai Support
-            </h1>
-          </div>
-
-          <div className="relative mt-4 h-20 w-[260px] overflow-hidden">
-            <div className="absolute left-0 top-1/2 h-[2px] w-full -translate-y-1/2 bg-white/10" />
-            <div className="absolute left-0 top-1/2 h-[2px] w-full -translate-y-1/2 bg-gradient-to-r from-transparent via-white/20 to-transparent blur-sm" />
-            <div
-              className={`absolute top-1/2 h-3 w-12 -translate-y-1/2 rounded-full bg-gradient-to-r from-cyan-300 via-purple-400 to-cyan-300 blur-[1px] ${
-                isCalling || isConnected || isAiSpeaking
-                  ? "animate-[supportNano_2.2s_linear_infinite]"
-                  : "animate-[supportNanoIdle_4.5s_ease-in-out_infinite]"
-              }`}
-            />
-            <div
-              className={`absolute top-1/2 h-7 w-7 -translate-y-1/2 rounded-full bg-white/90 shadow-[0_0_18px_rgba(255,255,255,0.65)] ${
-                isCalling || isConnected || isAiSpeaking
-                  ? "animate-[supportOrb_2.2s_linear_infinite]"
-                  : "animate-[supportOrbIdle_4.5s_ease-in-out_infinite]"
-              }`}
-            />
+            Back to Gate
+          </Link>
+          <div className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-sm text-emerald-300">
+            Free Voice Test
           </div>
         </div>
+      </header>
 
-        <div className="mb-6 min-h-[42px] text-center text-[34px] font-light tracking-wide">
-          {digits}
-        </div>
+      <section className="relative z-10 flex min-h-[calc(100vh-88px)] items-center justify-center px-4 pb-8 pt-2">
+        <div className="w-full max-w-[420px] rounded-[42px] border border-white/10 bg-zinc-950/90 p-4 shadow-[0_0_60px_rgba(255,255,255,0.08)] backdrop-blur-2xl">
+          <div className="rounded-[34px] border border-white/8 bg-black/90 p-4 shadow-inner shadow-white/5">
+            <div className="mx-auto mb-4 h-1.5 w-28 rounded-full bg-white/10" />
 
-        <div className="grid grid-cols-3 gap-x-7 gap-y-6 px-4">
-          {dialKeys.map((key) => (
-            <button
-              key={key.n}
-              type="button"
-              className="flex h-[92px] w-[92px] flex-col items-center justify-center rounded-full border border-white/10 bg-[#111216] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
-            >
-              <span className="text-[42px] font-semibold leading-none">
-                {key.n}
-              </span>
-              <span className="mt-1 text-[12px] font-semibold tracking-[0.18em] text-white/90">
-                {key.s}
-              </span>
-            </button>
-          ))}
-        </div>
+            <div className="relative overflow-hidden rounded-[30px] border border-white/8 bg-[radial-gradient(circle_at_50%_10%,rgba(255,255,255,0.07),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))] p-5">
+              <div className="absolute inset-x-0 top-0 h-28 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.1),transparent_70%)]" />
 
-        <div className="mt-8 flex items-center justify-center">
-          {!isCalling && !isConnected ? (
-            <button
-              onClick={handleCall}
-              className="flex h-[88px] w-[88px] items-center justify-center rounded-full bg-[#16a137] shadow-[0_8px_30px_rgba(22,161,55,0.35)]"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                className="h-10 w-10 fill-white"
-                aria-hidden="true"
-              >
-                <path d="M6.62 10.79a15.054 15.054 0 006.59 6.59l2.2-2.2a1 1 0 011.01-.24c1.12.37 2.33.57 3.58.57a1 1 0 011 1V20a1 1 0 01-1 1C10.3 21 3 13.7 3 4a1 1 0 011-1h3.5a1 1 0 011 1c0 1.25.2 2.46.57 3.58a1 1 0 01-.25 1.01l-2.2 2.2z" />
-              </svg>
-            </button>
-          ) : (
-            <button
-              onClick={handleEnd}
-              className="flex h-[88px] w-[88px] items-center justify-center rounded-full bg-[#b91c1c] shadow-[0_8px_30px_rgba(185,28,28,0.35)]"
-            >
-              <span className="h-1.5 w-9 rounded-full bg-white" />
-            </button>
-          )}
-        </div>
-
-        <div className="mt-auto pt-12">
-          <div className="grid grid-cols-5 gap-2 rounded-[34px] border border-white/10 bg-[#101114] px-3 py-3">
-            {[
-              "Favorites",
-              "Recents",
-              "Contacts",
-              "Keypad",
-              "Voicemail",
-            ].map((item, index) => (
-              <div
-                key={item}
-                className={`flex flex-col items-center justify-center rounded-[24px] px-2 py-3 ${
-                  index === 3 ? "bg-white/10" : ""
-                }`}
-              >
-                <div
-                  className={`mb-2 h-6 w-6 rounded-full ${
-                    index === 3 ? "bg-[#2491ff]" : "bg-white"
-                  } ${index === 4 ? "rounded-[10px]" : ""} ${
-                    index === 1 ? "h-5 w-5 border-4 border-white bg-transparent" : ""
-                  } ${index === 2 ? "rounded-full border-4 border-white bg-transparent" : ""}
-                  ${index === 0 ? "clip-path-star" : ""}`}
-                />
-                <span
-                  className={`text-[11px] ${
-                    index === 3 ? "text-[#2491ff]" : "text-white"
-                  }`}
-                >
-                  {item}
-                </span>
+              <div className="mb-6 flex items-center justify-between text-xs text-white/45">
+                <span>{currentRingtonePath ? currentRingtonePath.split("/").pop() : "No ringtone yet"}</span>
+                <span>{micReady ? "Mic ready" : "Mic off"}</span>
               </div>
-            ))}
+
+              <div className="mb-6 text-center">
+                <p className="text-xs uppercase tracking-[0.35em] text-white/40">Taurus AI Support</p>
+                <div className="mt-4 flex items-center justify-center">
+                  <div
+                    className={[
+                      "relative flex h-40 w-40 items-center justify-center rounded-full border border-white/10 transition-all duration-500",
+                      voiceState === "listening"
+                        ? "shadow-[0_0_60px_rgba(34,197,94,0.18)]"
+                        : voiceState === "speaking"
+                        ? "shadow-[0_0_60px_rgba(56,189,248,0.18)]"
+                        : "shadow-[0_0_50px_rgba(255,255,255,0.08)]",
+                    ].join(" ")}
+                  >
+                    <div className="absolute inset-3 rounded-full border border-white/5" />
+                    <div
+                      className={[
+                        "absolute inset-0 rounded-full blur-2xl",
+                        voiceState === "listening"
+                          ? "bg-emerald-400/15"
+                          : voiceState === "speaking"
+                          ? "bg-cyan-400/15"
+                          : "bg-fuchsia-400/10",
+                      ].join(" ")}
+                    />
+                    <div className="relative flex h-28 w-28 items-center justify-center rounded-full bg-white/5 backdrop-blur-xl">
+                      <div className="text-center">
+                        <p className="text-3xl font-semibold tracking-tight">
+                          {callState === "ringing"
+                            ? formattedRingCountdown
+                            : formattedSessionCountdown}
+                        </p>
+                        <p className="mt-1 text-[10px] uppercase tracking-[0.28em] text-white/45">
+                          {callState === "ringing" ? "ringing" : "session"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mb-4 text-center">
+                <p className="text-2xl font-semibold tracking-tight text-white">
+                  {phoneNumber || "+95 ••• ••• •••"}
+                </p>
+                <p className="mt-2 text-sm text-white/55">{statusText}</p>
+                {errorText ? <p className="mt-2 text-sm text-rose-300">{errorText}</p> : null}
+              </div>
+
+              <div className="space-y-3">
+                <label className="block text-xs uppercase tracking-[0.3em] text-white/40">
+                  Dial Number
+                </label>
+                <input
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(formatPhoneNumber(e.target.value))}
+                  inputMode="tel"
+                  placeholder="Enter any phone number"
+                  className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-lg tracking-[0.15em] text-white outline-none placeholder:text-white/20 focus:border-cyan-300/40"
+                />
+              </div>
+
+              <div className="mt-5 grid grid-cols-3 gap-3 text-center text-sm">
+                <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                  <p className="text-white/45">Mode</p>
+                  <p className="mt-1 font-medium text-white">Voice Only</p>
+                </div>
+                <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                  <p className="text-white/45">Camera</p>
+                  <p className="mt-1 font-medium text-white">Off</p>
+                </div>
+                <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                  <p className="text-white/45">Trial</p>
+                  <p className="mt-1 font-medium text-white">5 Min</p>
+                </div>
+              </div>
+
+              <div className="mt-6 flex items-center justify-center gap-4">
+                <button
+                  onClick={resetCall}
+                  className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-white/5 text-xl transition hover:bg-white/10"
+                  aria-label="Reset call"
+                >
+                  ⟲
+                </button>
+
+                <button
+                  onClick={canStart ? startCall : () => endCall("Call ended by user.")}
+                  className={[
+                    "flex h-20 w-20 items-center justify-center rounded-full text-2xl font-semibold transition",
+                    canStart
+                      ? "bg-emerald-500 text-black shadow-[0_0_40px_rgba(34,197,94,0.28)] hover:scale-[1.03]"
+                      : "bg-rose-500 text-white shadow-[0_0_40px_rgba(244,63,94,0.28)] hover:scale-[1.03]",
+                  ].join(" ")}
+                  aria-label={canStart ? "Start call" : "End call"}
+                >
+                  {canStart ? "☎" : "✕"}
+                </button>
+
+                <div className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-white/5 text-xl">
+                  {voiceState === "listening" ? "🎙️" : voiceState === "speaking" ? "🔊" : "•"}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-3 gap-3 text-center text-[11px] text-white/45">
+              <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">Ring: 20s</div>
+              <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">No Camera</div>
+              <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">Black Theme</div>
+            </div>
           </div>
         </div>
-      </div>
-
-      <style jsx global>{`
-        @keyframes supportNano {
-          0% {
-            transform: translate(0, -50%);
-            opacity: 0.7;
-          }
-          50% {
-            transform: translate(210px, -50%);
-            opacity: 1;
-          }
-          100% {
-            transform: translate(0, -50%);
-            opacity: 0.7;
-          }
-        }
-
-        @keyframes supportOrb {
-          0% {
-            transform: translate(0, -50%) scale(0.95);
-            opacity: 0.85;
-          }
-          50% {
-            transform: translate(228px, -50%) scale(1.08);
-            opacity: 1;
-          }
-          100% {
-            transform: translate(0, -50%) scale(0.95);
-            opacity: 0.85;
-          }
-        }
-
-        @keyframes supportNanoIdle {
-          0% {
-            transform: translate(20px, -50%);
-            opacity: 0.55;
-          }
-          50% {
-            transform: translate(170px, -50%);
-            opacity: 0.95;
-          }
-          100% {
-            transform: translate(20px, -50%);
-            opacity: 0.55;
-          }
-        }
-
-        @keyframes supportOrbIdle {
-          0% {
-            transform: translate(24px, -50%) scale(0.9);
-            opacity: 0.65;
-          }
-          50% {
-            transform: translate(182px, -50%) scale(1);
-            opacity: 0.95;
-          }
-          100% {
-            transform: translate(24px, -50%) scale(0.9);
-            opacity: 0.65;
-          }
-        }
-
-        .clip-path-star {
-          clip-path: polygon(
-            50% 0%,
-            61% 35%,
-            98% 35%,
-            68% 57%,
-            79% 91%,
-            50% 70%,
-            21% 91%,
-            32% 57%,
-            2% 35%,
-            39% 35%
-          );
-        }
-      `}</style>
+      </section>
     </main>
   );
+}
+
+function formatClock(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const seconds = Math.floor(totalSeconds % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${minutes}:${seconds}`;
 }

@@ -1,86 +1,137 @@
-"use client";
+import Link from "next/link";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-
-export default function LoginGate() {
-  const router = useRouter();
-
-  const [showModal, setShowModal] = useState(false);
-  const [code, setCode] = useState("");
-
-  const handleLogin = () => {
-    if (code === "7777") {
-      router.push("/");
-    } else {
-      alert("Invalid Code");
-    }
-  };
-
-  const handleCall = () => {
-    router.push("/ai-call");
-  };
-
+export default function LoginGatePage() {
   return (
-    <div className="relative w-full h-screen bg-black overflow-hidden text-white">
-      <div className="absolute top-5 left-0 right-0 flex justify-between px-6 z-20">
-        <button
-          onClick={() => setShowModal(true)}
-          className="text-xs border border-white/20 px-4 py-2 rounded-full hover:bg-white/10 transition"
+    <main className="relative min-h-screen overflow-hidden bg-black text-white">
+      {/* Background */}
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.06),transparent_20%),radial-gradient(circle_at_50%_55%,rgba(125,211,252,0.10),transparent_24%),radial-gradient(circle_at_55%_48%,rgba(216,180,254,0.14),transparent_18%)]" />
+      <div className="absolute inset-0 opacity-[0.05] [background-image:linear-gradient(rgba(255,255,255,0.18)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.18)_1px,transparent_1px)] [background-size:90px_90px]" />
+
+      {/* Top tiny labels */}
+      <div className="pointer-events-none absolute left-5 top-4 text-[9px] uppercase tracking-[0.35em] text-white/65">
+        Taurus AI
+        <br />
+        Login Gate
+      </div>
+
+      <div className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 text-center text-[9px] uppercase tracking-[0.28em] text-white/45">
+        Secure preview access
+        <br />
+        under configuration
+      </div>
+
+      <div className="pointer-events-none absolute right-8 top-4 text-right text-[9px] uppercase tracking-[0.28em] text-white/45">
+        Platform
+        <br />
+        build phase
+      </div>
+
+      {/* Buttons */}
+      <div className="absolute right-6 top-16 z-20 flex gap-3">
+        <Link
+          href="/ai-call"
+          className="rounded-full border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm text-cyan-200 transition hover:bg-cyan-300/20"
         >
-          Login
-        </button>
-
-        <button
-          onClick={handleCall}
-          className="text-xs border border-white px-4 py-2 rounded-full hover:bg-white hover:text-black transition"
+          AI Support
+        </Link>
+        <Link
+          href="/ai-call"
+          className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm text-white/90 transition hover:bg-white/10"
         >
-          Call Now
-        </button>
+          Quick Call
+        </Link>
       </div>
 
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="w-40 h-40 rounded-full bg-gradient-to-br from-purple-400 via-pink-300 to-blue-400 blur-[2px] animate-pulse shadow-[0_0_80px_rgba(255,255,255,0.2)]" />
-      </div>
+      <section className="relative z-10 grid min-h-screen grid-cols-1 items-center px-6 md:px-10 lg:grid-cols-[1.05fr_1fr_0.9fr]">
+        {/* Left */}
+        <div className="self-center">
+          <h1 className="max-w-md text-5xl font-semibold leading-[0.9] md:text-7xl">
+            <span className="block italic font-light text-white/95">Creative</span>
+            <span className="block uppercase">Developer.</span>
+          </h1>
 
-      <div className="absolute left-10 bottom-20 z-10">
-        <h1 className="text-4xl font-light tracking-wide">
-          Taurus AI
-          <br />
-          <span className="text-white/60">Calling System</span>
-        </h1>
-      </div>
+          <p className="mt-8 max-w-sm text-sm leading-7 text-white/55">
+            Taurus AI login gate is currently being refined. Preview structure,
+            AI support flow, and access layers are still under setup.
+          </p>
 
-      {showModal && (
-        <div className="absolute inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-30">
-          <div className="bg-white/10 border border-white/20 rounded-2xl p-6 w-[300px] text-center">
-            <h2 className="mb-4 text-sm text-white/80">
-              Enter Access Code
-            </h2>
-
-            <input
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="••••"
-              className="w-full px-4 py-2 rounded-lg bg-black/50 border border-white/20 text-center outline-none"
-            />
-
-            <button
-              onClick={handleLogin}
-              className="mt-4 w-full bg-white text-black py-2 rounded-lg text-sm"
-            >
-              Enter
-            </button>
-
-            <button
-              onClick={() => setShowModal(false)}
-              className="mt-2 text-xs text-white/50"
-            >
-              Cancel
-            </button>
+          <div className="mt-10 flex flex-wrap gap-3 text-[11px] uppercase tracking-[0.28em] text-white/35">
+            <span>AI Calling</span>
+            <span>SIM Preview</span>
+            <span>Wallet</span>
+            <span>VPN</span>
           </div>
         </div>
-      )}
-    </div>
+
+        {/* Center orb */}
+        <div className="relative flex items-center justify-center py-16">
+          <div className="absolute h-[380px] w-[380px] rounded-full bg-white/5 blur-3xl" />
+          <div className="absolute bottom-8 h-28 w-[85%] rounded-[100%] bg-white/10 blur-2xl opacity-60" />
+
+          <div className="relative">
+            <div className="absolute inset-0 rounded-full bg-white/20 blur-2xl" />
+            <div className="relative h-56 w-56 animate-[spin_16s_linear_infinite] rounded-full bg-[conic-gradient(from_180deg,#fff_0deg,#9fe7ff_60deg,#f0b0ff_130deg,#c4fff9_220deg,#fff_360deg)] p-[2px] shadow-[0_0_80px_rgba(255,255,255,0.16)] md:h-72 md:w-72">
+              <div className="h-full w-full rounded-full bg-[radial-gradient(circle_at_35%_30%,rgba(255,255,255,0.95),rgba(220,230,255,0.86)_20%,rgba(245,168,255,0.72)_45%,rgba(110,232,255,0.62)_68%,rgba(255,255,255,0.22)_84%,rgba(0,0,0,0.08)_100%)]" />
+            </div>
+
+            <div className="absolute inset-x-6 -bottom-14 h-16 rounded-[100%] bg-[radial-gradient(circle,rgba(255,255,255,0.45),rgba(255,255,255,0.05)_60%,transparent_100%)] blur-xl" />
+          </div>
+        </div>
+
+        {/* Right info panel */}
+        <div className="mx-auto w-full max-w-md rounded-[28px] border border-white/10 bg-white/5 p-6 backdrop-blur-2xl shadow-[0_0_60px_rgba(255,255,255,0.06)]">
+          <p className="text-[11px] uppercase tracking-[0.35em] text-white/40">
+            Login Gate Status
+          </p>
+
+          <h2 className="mt-3 text-2xl font-semibold">
+            Under Maintenance
+          </h2>
+
+          <p className="mt-4 text-sm leading-7 text-white/60">
+            This access gate is not fully opened yet. Authentication flow,
+            security layers, and preview controls are still being configured.
+          </p>
+
+          <div className="mt-6 space-y-3">
+            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+              <p className="text-sm text-white/85">Create account</p>
+              <p className="mt-1 text-xs text-white/40">
+                Username, password, security code setup pending
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+              <p className="text-sm text-white/85">Daily preview code</p>
+              <p className="mt-1 text-xs text-white/40">
+                Public learning mode will be added here
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+              <p className="text-sm text-white/85">SIM store</p>
+              <p className="mt-1 text-xs text-white/40">
+                Preview only, purchasing remains locked
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-6 grid grid-cols-2 gap-3">
+            <button
+              disabled
+              className="cursor-not-allowed rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/35"
+            >
+              Enter Gate
+            </button>
+            <Link
+              href="/ai-call"
+              className="rounded-2xl border border-cyan-300/30 bg-cyan-300/10 px-4 py-3 text-center text-sm text-cyan-200 transition hover:bg-cyan-300/20"
+            >
+              Call Support
+            </Link>
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }
