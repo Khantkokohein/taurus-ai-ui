@@ -18,13 +18,16 @@ const FREE_CALL_DURATION_SECONDS = 5 * 60;
 const TAURUS_GREETING =
   "Hello, I am Taurus AI. Your support line is now connected. How can I help you today?";
 
+const AI_NUMBER_PREFIX = "+70 20 ";
+const REQUIRED_LOCAL_NUMBER = "7777777";
+
 export default function AICallPage() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [callState, setCallState] = useState<CallState>("idle");
   const [voiceState, setVoiceState] = useState<VoiceState>("silent");
   const [ringCountdown, setRingCountdown] = useState(RING_DURATION_SECONDS);
   const [sessionSecondsLeft, setSessionSecondsLeft] = useState(FREE_CALL_DURATION_SECONDS);
-  const [statusText, setStatusText] = useState("Enter a number to start your Taurus AI call.");
+  const [statusText, setStatusText] = useState("Enter 7777777 to start your Taurus AI call.");
   const [micReady, setMicReady] = useState(false);
   const [errorText, setErrorText] = useState("");
   const [currentRingtonePath, setCurrentRingtonePath] = useState("");
@@ -43,7 +46,9 @@ export default function AICallPage() {
   );
 
   useEffect(() => {
-    speechSynthesisRef.current = typeof window !== "undefined" ? window.speechSynthesis : null;
+    speechSynthesisRef.current =
+      typeof window !== "undefined" ? window.speechSynthesis : null;
+
     return () => {
       isMountedRef.current = false;
       stopAllAudio();
@@ -55,9 +60,12 @@ export default function AICallPage() {
 
   const formattedRingCountdown = formatClock(ringCountdown);
   const formattedSessionCountdown = formatClock(sessionSecondsLeft);
+  const fullAICallNumber = phoneNumber
+    ? `${AI_NUMBER_PREFIX}${phoneNumber}`
+    : `${AI_NUMBER_PREFIX}•••••••`;
 
   function formatPhoneNumber(value: string) {
-    return value.replace(/[^\d+\-()\s]/g, "").slice(0, 22);
+    return value.replace(/\D/g, "").slice(0, 7);
   }
 
   function randomRingtone() {
@@ -112,7 +120,12 @@ export default function AICallPage() {
 
   async function startCall() {
     if (!phoneNumber.trim()) {
-      setErrorText("Please enter a phone number first.");
+      setErrorText("Enter number 7777777 first.");
+      return;
+    }
+
+    if (phoneNumber !== REQUIRED_LOCAL_NUMBER) {
+      setErrorText("Only 7777777 is allowed for this Taurus AI demo.");
       return;
     }
 
@@ -125,11 +138,11 @@ export default function AICallPage() {
     setSessionSecondsLeft(FREE_CALL_DURATION_SECONDS);
     setCallState("dialing");
     setVoiceState("silent");
-    setStatusText("Dialing Taurus AI support...");
+    setStatusText(`Dialing ${AI_NUMBER_PREFIX}${phoneNumber}...`);
 
     requestAnimationFrame(() => {
       setCallState("ringing");
-      setStatusText("Calling... please wait while Taurus AI answers.");
+      setStatusText(`Calling ${AI_NUMBER_PREFIX}${phoneNumber}...`);
       playRingtone(selected);
       beginRingCountdown();
     });
@@ -255,7 +268,7 @@ export default function AICallPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             prompt: result,
-            phoneNumber,
+            phoneNumber: `${AI_NUMBER_PREFIX}${phoneNumber}`,
             mode: "voice_support",
           }),
         });
@@ -327,10 +340,11 @@ export default function AICallPage() {
     setVoiceState("silent");
     setRingCountdown(RING_DURATION_SECONDS);
     setSessionSecondsLeft(FREE_CALL_DURATION_SECONDS);
-    setStatusText("Enter a number to start your Taurus AI call.");
+    setStatusText("Enter 7777777 to start your Taurus AI call.");
     setErrorText("");
     setMicReady(false);
     setCurrentRingtonePath("");
+    setPhoneNumber("");
   }
 
   const canStart = callState === "idle" || callState === "ended";
@@ -418,7 +432,7 @@ export default function AICallPage() {
 
               <div className="mb-4 text-center">
                 <p className="text-2xl font-semibold tracking-tight text-white">
-                  {phoneNumber || "+95 ••• ••• •••"}
+                  {fullAICallNumber}
                 </p>
                 <p className="mt-2 text-sm text-white/55">{statusText}</p>
                 {errorText ? <p className="mt-2 text-sm text-rose-300">{errorText}</p> : null}
@@ -426,15 +440,22 @@ export default function AICallPage() {
 
               <div className="space-y-3">
                 <label className="block text-xs uppercase tracking-[0.3em] text-white/40">
-                  Dial Number
+                  Dial Taurus Number
                 </label>
-                <input
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(formatPhoneNumber(e.target.value))}
-                  inputMode="tel"
-                  placeholder="Enter any phone number"
-                  className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-lg tracking-[0.15em] text-white outline-none placeholder:text-white/20 focus:border-cyan-300/40"
-                />
+
+                <div className="flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+                  <span className="text-lg text-white/60">{AI_NUMBER_PREFIX}</span>
+                  <input
+                    value={phoneNumber}
+                    onChange={(e) => {
+                      setPhoneNumber(formatPhoneNumber(e.target.value));
+                      setErrorText("");
+                    }}
+                    inputMode="numeric"
+                    placeholder="7777777"
+                    className="w-[140px] bg-transparent text-center text-lg tracking-[0.18em] text-white outline-none placeholder:text-white/20"
+                  />
+                </div>
               </div>
 
               <div className="mt-5 grid grid-cols-3 gap-3 text-center text-sm">
@@ -481,9 +502,15 @@ export default function AICallPage() {
             </div>
 
             <div className="mt-4 grid grid-cols-3 gap-3 text-center text-[11px] text-white/45">
-              <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">Ring: 20s</div>
-              <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">No Camera</div>
-              <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">Black Theme</div>
+              <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                Ring: 20s
+              </div>
+              <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                No Camera
+              </div>
+              <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                Black Theme
+              </div>
             </div>
           </div>
         </div>
