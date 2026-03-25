@@ -1,107 +1,87 @@
 "use client";
+
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 export default function LoginGate() {
-  const [showCallScreen, setShowCallScreen] = useState(false);
-  const [openModal, setOpenModal] = useState(false);
-  const [code, setCode] = useState("");
-  const [error, setError] = useState("");
+  const router = useRouter();
 
-  const handleFakeLogin = () => {
-    // ဝင်လို့မရအောင် တမင်ပိတ်ထားတဲ့ Logic
-    setError("SECURITY BREACH: Access Key is invalid or expired.");
+  const [showModal, setShowModal] = useState(false);
+  const [code, setCode] = useState("");
+
+  const handleLogin = () => {
+    // simple demo code (နောက်မှ DB ချိတ်လို့ရ)
+    if (code === "7777") {
+      router.push("/"); // 👉 app/page.tsx (main)
+    } else {
+      alert("Invalid Code");
+    }
+  };
+
+  const handleCall = () => {
+    router.push("/call-ai"); // 👉 call AI page
   };
 
   return (
-    <div className="relative z-10 flex min-h-screen flex-col items-center justify-center bg-transparent">
-      
-      {/* --- Main Page UI (Creative Developer Style) --- */}
-      {!showCallScreen && (
-        <div className="w-full max-w-6xl flex flex-col items-center">
-          {/* Header Texts */}
-          <div className="flex w-full justify-between items-start px-10 mb-20 opacity-60 text-[10px] tracking-[0.5em] uppercase">
-            <div>Project: Thorr AI</div>
-            <div className="text-right italic underline">Authentication Required</div>
-          </div>
+    <div className="relative w-full h-screen bg-black overflow-hidden text-white">
+      {/* ===== TOP BUTTONS ===== */}
+      <div className="absolute top-5 left-0 right-0 flex justify-between px-6 z-20">
+        <button
+          onClick={() => setShowModal(true)}
+          className="text-xs border border-white/20 px-4 py-2 rounded-full hover:bg-white/10 transition"
+        >
+          Login
+        </button>
 
-          {/* Center Content (Creative Developer Look) */}
-          <div className="text-center">
-             <h1 className="text-[80px] md:text-[120px] font-thin leading-none tracking-tighter italic text-white drop-shadow-2xl">
-               Creative
-             </h1>
-             <h2 className="text-[60px] md:text-[90px] font-black leading-none tracking-tighter uppercase text-white mt-[-10px]">
-               Developer.
-             </h2>
-          </div>
+        <button
+          onClick={handleCall}
+          className="text-xs border border-white px-4 py-2 rounded-full hover:bg-white hover:text-black transition"
+        >
+          Call Now
+        </button>
+      </div>
 
-          {/* Enter Button (Fake Gate) */}
-          <div className="mt-20">
-            <button 
-              onClick={() => setOpenModal(true)}
-              className="px-10 py-4 border border-white/20 rounded-full hover:bg-white hover:text-black transition-all duration-700 text-[10px] tracking-[0.4em] uppercase"
-            >
-              Access System
-            </button>
-          </div>
+      {/* ===== CENTER 3D ORB ===== */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="w-40 h-40 rounded-full bg-gradient-to-br from-purple-400 via-pink-300 to-blue-400 blur-[2px] animate-pulse shadow-[0_0_80px_rgba(255,255,255,0.2)]" />
+      </div>
 
-          {/* Test Bypass (Hidden) */}
-          <button 
-            onClick={() => setShowCallScreen(true)}
-            className="mt-10 opacity-5 hover:opacity-100 text-[8px] transition-opacity"
-          >
-            [DEBUG_BYPASS]
-          </button>
-        </div>
-      )}
+      {/* ===== TEXT ===== */}
+      <div className="absolute left-10 bottom-20 z-10">
+        <h1 className="text-4xl font-light tracking-wide">
+          Taurus AI
+          <br />
+          <span className="text-white/60">Calling System</span>
+        </h1>
+      </div>
 
-      {/* --- Fake Password Modal --- */}
-      {openModal && !showCallScreen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-3xl p-6">
-          <div className="w-full max-w-[400px] text-center">
-            <h3 className="text-white text-[12px] tracking-[0.6em] uppercase mb-10 opacity-50">Encryption Key</h3>
-            <input 
-              type="password" 
-              value={code} 
+      {/* ===== LOGIN MODAL ===== */}
+      {showModal && (
+        <div className="absolute inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-30">
+          <div className="bg-white/10 border border-white/20 rounded-2xl p-6 w-[300px] text-center">
+            <h2 className="mb-4 text-sm text-white/80">
+              Enter Access Code
+            </h2>
+
+            <input
+              value={code}
               onChange={(e) => setCode(e.target.value)}
-              className="w-full bg-transparent border-b border-white/20 p-4 text-center text-2xl outline-none focus:border-white transition-colors text-white"
-              placeholder="••••••••"
+              placeholder="••••"
+              className="w-full px-4 py-2 rounded-lg bg-black/50 border border-white/20 text-center outline-none"
             />
-            {error && <p className="text-red-500 text-[10px] mt-6 tracking-widest uppercase">{error}</p>}
-            
-            <div className="mt-12 flex flex-col gap-4">
-               <button onClick={handleFakeLogin} className="text-[10px] tracking-widest uppercase py-4 border border-white/10 hover:border-red-500 hover:text-red-500 transition-all">Execute</button>
-               <button onClick={() => setOpenModal(false)} className="text-[8px] opacity-30 uppercase tracking-[0.4em]">Abort</button>
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* --- AI Call Screen UI --- */}
-      {showCallScreen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/90 backdrop-blur-2xl">
-          <div className="relative w-[340px] h-[680px] bg-[#050505] border-[1px] border-white/10 rounded-[50px] flex flex-col p-8 overflow-hidden shadow-[0_0_100px_rgba(255,255,255,0.05)]">
-            {/* Notch */}
-            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-[#151515] rounded-b-2xl" />
-            
-            <div className="mt-20 text-center">
-              <div className="w-20 h-20 border border-white/10 rounded-full mx-auto mb-6 flex items-center justify-center animate-pulse">
-                 <div className="w-10 h-10 bg-white/10 rounded-full" />
-              </div>
-              <h3 className="text-2xl font-light tracking-widest text-white uppercase">Thorr AI</h3>
-              <p className="text-[8px] tracking-[0.8em] uppercase text-white/30 mt-4">Active Line</p>
-            </div>
-
-            <div className="mt-auto mb-16 px-4">
-              <p className="text-[12px] leading-relaxed text-white/70 italic text-center font-light">
-                "System is restricted to Taurus developers only. Please verify your credentials."
-              </p>
-            </div>
-
-            <button 
-              onClick={() => setShowCallScreen(false)}
-              className="w-14 h-14 bg-red-900/20 border border-red-500/30 rounded-full mx-auto flex items-center justify-center hover:bg-red-500 transition-all"
+            <button
+              onClick={handleLogin}
+              className="mt-4 w-full bg-white text-black py-2 rounded-lg text-sm"
             >
-              <span className="text-white">✕</span>
+              Enter
+            </button>
+
+            <button
+              onClick={() => setShowModal(false)}
+              className="mt-2 text-xs text-white/50"
+            >
+              Cancel
             </button>
           </div>
         </div>
