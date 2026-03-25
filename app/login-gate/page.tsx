@@ -8,7 +8,7 @@ import * as THREE from "three";
 const ACCESS_CODE = "TAURUS2026";
 
 export default function LoginGatePage() {
-  const [showPassword, setShowPassword] = useState(false);
+  const [open, setOpen] = useState(false);
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [pointer, setPointer] = useState({ x: 0, y: 0 });
@@ -20,7 +20,7 @@ export default function LoginGatePage() {
     }
   }, []);
 
-  function handleEnterGate() {
+  function enterGate() {
     if (code.trim() === ACCESS_CODE) {
       localStorage.setItem("taurus_access", "granted");
       window.location.href = "/ai-call";
@@ -29,45 +29,41 @@ export default function LoginGatePage() {
     setError("Invalid Access Code");
   }
 
-  function goDirectCall() {
-    localStorage.setItem("taurus_access", "granted");
-    window.location.href = "/ai-call";
+  function updatePointer(clientX: number, clientY: number) {
+    const x = (clientX / window.innerWidth) * 2 - 1;
+    const y = -((clientY / window.innerHeight) * 2 - 1);
+    setPointer({ x, y });
   }
 
   return (
     <main
       className="relative min-h-screen overflow-hidden bg-black text-white"
-      onMouseMove={(e) => {
-        const x = (e.clientX / window.innerWidth) * 2 - 1;
-        const y = -((e.clientY / window.innerHeight) * 2 - 1);
-        setPointer({ x, y });
-      }}
+      onMouseMove={(e) => updatePointer(e.clientX, e.clientY)}
       onMouseLeave={() => setPointer({ x: 0, y: 0 })}
       onTouchMove={(e) => {
         const touch = e.touches[0];
         if (!touch) return;
-        const x = (touch.clientX / window.innerWidth) * 2 - 1;
-        const y = -((touch.clientY / window.innerHeight) * 2 - 1);
-        setPointer({ x, y });
+        updatePointer(touch.clientX, touch.clientY);
       }}
       onTouchEnd={() => setPointer({ x: 0, y: 0 })}
     >
       <div className="absolute inset-0">
         <Canvas
-          dpr={[1, 1.5]}
+          camera={{ position: [0, 0.1, 7.2], fov: 42 }}
           gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
-          camera={{ position: [0, 0, 8.6], fov: 42 }}
+          dpr={[1, 1.6]}
         >
-          <GateScene pointer={pointer} />
+          <AdaptiveDpr />
+          <CinemaScene pointer={pointer} />
         </Canvas>
       </div>
 
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_72%,rgba(148,126,255,0.10)_0%,rgba(96,166,255,0.08)_18%,rgba(0,0,0,0.0)_34%),linear-gradient(180deg,rgba(0,0,0,0.15)_0%,rgba(0,0,0,0.38)_52%,rgba(0,0,0,0.74)_100%)]" />
-      <div className="pointer-events-none absolute inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(255,255,255,0.25)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.25)_1px,transparent_1px)] [background-size:48px_48px]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_58%,rgba(76,180,255,0.10)_0%,rgba(106,80,255,0.08)_18%,rgba(0,0,0,0.0)_34%),linear-gradient(180deg,rgba(0,0,0,0.02)_0%,rgba(0,0,0,0.28)_48%,rgba(0,0,0,0.78)_100%)]" />
+      <div className="pointer-events-none absolute inset-0 opacity-[0.05] [background-image:linear-gradient(rgba(255,255,255,0.16)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.16)_1px,transparent_1px)] [background-size:48px_48px]" />
 
-      <div className="relative z-10 flex min-h-screen flex-col justify-between px-5 py-5 sm:px-8 sm:py-7">
-        <div className="grid grid-cols-3 items-start text-[10px] uppercase tracking-[0.28em] text-white/52 sm:text-[11px]">
-          <div className="self-start font-semibold leading-5">
+      <div className="relative z-10 flex min-h-screen flex-col justify-between px-5 py-6 sm:px-8 sm:py-8">
+        <div className="grid grid-cols-3 items-start text-[10px] uppercase tracking-[0.28em] text-white/48 sm:text-[11px]">
+          <div className="font-semibold leading-5">
             Taurus
             <br />
             Gate
@@ -80,55 +76,54 @@ export default function LoginGatePage() {
           </div>
 
           <div className="justify-self-end text-right leading-5">
-            Role
+            Nano
             <br />
-            Taurus AI Main Support
+            Cinema
           </div>
         </div>
 
-        <div className="pointer-events-none absolute inset-x-0 top-[42%] flex justify-center">
-          <div className="h-[1px] w-[88%] bg-gradient-to-r from-transparent via-white/10 to-transparent" />
-        </div>
-
         <div className="flex flex-1 items-center justify-center">
-          <div className="relative w-full max-w-[1380px]">
+          <div className="relative w-full max-w-[1480px]">
             <div className="absolute left-[2%] top-[14%] hidden xl:block">
-              <div className="text-[76px] italic leading-none text-white/94 [font-family:Georgia,serif]">
+              <div className="text-[88px] italic leading-none text-white/92 [font-family:Georgia,serif]">
                 Creative
               </div>
-              <div className="mt-1 text-[68px] font-black uppercase leading-none tracking-tight text-white">
+              <div className="mt-1 text-[74px] font-black uppercase leading-none tracking-tight text-white">
                 Gate.
               </div>
             </div>
 
-            <div className="absolute right-[4%] top-[24%] hidden max-w-[250px] xl:block">
-              <p className="text-[12px] leading-7 text-white/60">
-                Login gate access for Taurus AI Calling system. Secure entry
-                before support call interface, dial pad, SMS overlay, and AI
-                telecom workflow.
+            <div className="absolute right-[4%] top-[20%] hidden max-w-[270px] xl:block">
+              <p className="text-[12px] leading-7 text-white/62">
+                Taurus AI system is evolving for faster conversation, stronger
+                Myanmar understanding, and premium cinematic support experience.
+              </p>
+
+              <p className="mt-5 text-[11px] uppercase tracking-[0.24em] text-white/34">
+                Ultra Nano Access Layer
               </p>
             </div>
 
-            <div className="mx-auto flex min-h-[72vh] items-end justify-center">
-              <div className="w-full max-w-[380px] rounded-[30px] border border-white/12 bg-white/[0.04] p-4 shadow-[0_18px_80px_rgba(255,255,255,0.06)] backdrop-blur-xl sm:max-w-[420px] sm:p-5">
+            <div className="mx-auto flex min-h-[70vh] items-end justify-center">
+              <div className="w-full max-w-[400px] rounded-[30px] border border-white/12 bg-white/[0.05] p-4 shadow-[0_22px_90px_rgba(255,255,255,0.05)] backdrop-blur-xl sm:max-w-[430px] sm:p-5">
                 <div className="mb-4 text-center">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.28em] text-white/55">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.28em] text-white/52">
                     Secure Entry
                   </div>
-                  <h1 className="mt-3 text-[28px] font-semibold tracking-tight text-white sm:text-[34px]">
+                  <h1 className="mt-3 text-[30px] font-semibold tracking-tight text-white sm:text-[36px]">
                     Login AI Call
                     <span className="block">Support Gate</span>
                   </h1>
                   <p className="mt-3 text-sm leading-7 text-white/60">
-                    Premium access layer before Taurus AI telecom support
-                    interface.
+                    Cinematic nano gateway before Taurus AI world-class support
+                    calling experience.
                   </p>
                 </div>
 
                 <div className="space-y-3">
                   <button
                     onClick={() => {
-                      setShowPassword(true);
+                      setOpen(true);
                       setError("");
                     }}
                     className="w-full rounded-2xl border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.10)_0%,rgba(255,255,255,0.04)_100%)] px-5 py-4 text-sm font-semibold text-white shadow-[0_14px_40px_rgba(255,255,255,0.05)] transition hover:translate-y-[-1px] hover:bg-white/[0.10]"
@@ -137,30 +132,33 @@ export default function LoginGatePage() {
                   </button>
 
                   <button
-                    onClick={goDirectCall}
-                    className="w-full rounded-2xl border border-white/12 bg-white/[0.03] px-5 py-4 text-sm font-semibold text-white/80 transition hover:bg-white/[0.08]"
+                    onClick={() => {
+                      setOpen(true);
+                      setError("");
+                    }}
+                    className="w-full rounded-2xl border border-white/12 bg-white/[0.03] px-5 py-4 text-sm font-semibold text-white/84 transition hover:bg-white/[0.08]"
                   >
-                    Continue To AI Call
+                    Continue
                   </button>
                 </div>
 
-                <div className="mt-5 text-center text-[11px] uppercase tracking-[0.24em] text-white/35">
-                  Nano 3D Access Layer
+                <div className="mt-5 text-center text-[11px] uppercase tracking-[0.24em] text-white/34">
+                  🌎 Myanmar · Speed · Voice
                 </div>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-3 items-end text-[10px] uppercase tracking-[0.26em] text-white/42 sm:text-[11px]">
+        <div className="grid grid-cols-3 items-end text-[10px] uppercase tracking-[0.26em] text-white/38 sm:text-[11px]">
           <div className="leading-5">
-            Local Gate
+            Live
             <br />
-            Not Live Call
+            Cinematic UI
           </div>
 
           <div className="justify-self-center text-center leading-5">
-            Secure
+            Gate
             <br />
             Overlay
           </div>
@@ -173,12 +171,12 @@ export default function LoginGatePage() {
         </div>
       </div>
 
-      {showPassword && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/55 px-4 backdrop-blur-md">
-          <div className="w-full max-w-[390px] rounded-[28px] border border-white/12 bg-[linear-gradient(180deg,rgba(18,18,20,0.92)_0%,rgba(10,10,12,0.95)_100%)] p-5 shadow-[0_28px_90px_rgba(0,0,0,0.55)]">
+      {open && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/60 px-4 backdrop-blur-2xl">
+          <div className="w-full max-w-[400px] rounded-[28px] border border-white/14 bg-[linear-gradient(180deg,rgba(22,22,26,0.92)_0%,rgba(10,10,12,0.96)_100%)] p-5 shadow-[0_30px_100px_rgba(0,0,0,0.6)]">
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
-                <div className="text-[11px] uppercase tracking-[0.26em] text-white/45">
+                <div className="text-[11px] uppercase tracking-[0.26em] text-white/42">
                   Password Entry
                 </div>
                 <h2 className="mt-2 text-2xl font-semibold text-white">
@@ -188,9 +186,9 @@ export default function LoginGatePage() {
 
               <button
                 onClick={() => {
-                  setShowPassword(false);
-                  setError("");
+                  setOpen(false);
                   setCode("");
+                  setError("");
                 }}
                 className="rounded-full border border-white/12 bg-white/[0.05] px-3 py-2 text-sm text-white/70"
               >
@@ -198,25 +196,25 @@ export default function LoginGatePage() {
               </button>
             </div>
 
-            <label className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-white/48">
+            <label className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-white/44">
               Access Password
             </label>
 
             <input
-              type="text"
+              type="password"
               value={code}
               onChange={(e) => {
                 setCode(e.target.value);
                 setError("");
               }}
               placeholder="Enter Password"
-              className="w-full rounded-2xl border border-white/12 bg-white/[0.06] px-4 py-4 text-sm text-white outline-none placeholder:text-white/28 focus:border-white/20"
+              className="w-full rounded-2xl border border-white/12 bg-white/[0.06] px-4 py-4 text-sm text-white outline-none placeholder:text-white/26 focus:border-cyan-300/30"
             />
 
             <div className="min-h-[24px] pt-3 text-sm text-red-400">{error}</div>
 
             <button
-              onClick={handleEnterGate}
+              onClick={enterGate}
               className="mt-1 w-full rounded-2xl border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.16)_0%,rgba(255,255,255,0.08)_100%)] px-4 py-4 text-sm font-semibold text-white transition hover:bg-white/[0.12]"
             >
               Enter Gate
@@ -228,84 +226,14 @@ export default function LoginGatePage() {
   );
 }
 
-function GateScene({ pointer }: { pointer: { x: number; y: number } }) {
-  const groupRef = useRef<THREE.Group | null>(null);
-  const towerRef = useRef<THREE.Group | null>(null);
-  const floorGlowRef = useRef<THREE.Mesh | null>(null);
-
-  useFrame((state) => {
-    if (!groupRef.current || !towerRef.current || !floorGlowRef.current) return;
-
-    groupRef.current.rotation.y = THREE.MathUtils.lerp(
-      groupRef.current.rotation.y,
-      pointer.x * 0.18,
-      0.045
-    );
-    groupRef.current.rotation.x = THREE.MathUtils.lerp(
-      groupRef.current.rotation.x,
-      pointer.y * 0.08,
-      0.045
-    );
-
-    towerRef.current.rotation.y += 0.0025;
-    towerRef.current.position.y = Math.sin(state.clock.elapsedTime * 1.1) * 0.08;
-
-    floorGlowRef.current.position.x = THREE.MathUtils.lerp(
-      floorGlowRef.current.position.x,
-      pointer.x * 1.1,
-      0.06
-    );
-  });
-
-  return (
-    <>
-      <AdaptivePixelRatio />
-      <fog attach="fog" args={["#000000", 8, 22]} />
-      <ambientLight intensity={0.45} color="#ffffff" />
-      <directionalLight position={[2, 6, 3]} intensity={0.8} color="#fff5dd" />
-      <pointLight position={[0, 1.4, 2.2]} intensity={1.3} color="#d2c1ff" />
-      <pointLight position={[-3, 0.5, 1.5]} intensity={0.7} color="#ffffff" />
-      <pointLight position={[3, 0.5, 1.5]} intensity={0.7} color="#ffffff" />
-
-      <group ref={groupRef} position={[0, -1.15, 0]}>
-        <Floor />
-        <group ref={towerRef}>
-          <CoreStructure />
-        </group>
-
-        <mesh ref={floorGlowRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.18, 0]}>
-          <circleGeometry args={[1.65, 60]} />
-          <meshBasicMaterial
-            color="#d8c7ff"
-            transparent
-            opacity={0.16}
-            blending={THREE.AdditiveBlending}
-            depthWrite={false}
-          />
-        </mesh>
-      </group>
-
-      <EffectComposer multisampling={0}>
-        <Bloom
-          intensity={1.1}
-          luminanceThreshold={0.08}
-          luminanceSmoothing={0.45}
-          mipmapBlur
-        />
-      </EffectComposer>
-    </>
-  );
-}
-
-function AdaptivePixelRatio() {
+function AdaptiveDpr() {
   const { gl } = useThree();
 
   useEffect(() => {
     const apply = () => {
       const mobile = window.innerWidth < 768;
-      gl.setPixelRatio(Math.min(window.devicePixelRatio || 1, mobile ? 1.25 : 1.5));
+      gl.setPixelRatio(Math.min(window.devicePixelRatio || 1, mobile ? 1.25 : 1.6));
     };
-
     apply();
     window.addEventListener("resize", apply);
     return () => window.removeEventListener("resize", apply);
@@ -314,161 +242,203 @@ function AdaptivePixelRatio() {
   return null;
 }
 
-function Floor() {
+function CinemaScene({ pointer }: { pointer: { x: number; y: number } }) {
+  const rootRef = useRef<THREE.Group | null>(null);
+  const coreRef = useRef<THREE.Group | null>(null);
+  const glowRef = useRef<THREE.Mesh | null>(null);
+
+  useFrame((state) => {
+    if (!rootRef.current || !coreRef.current || !glowRef.current) return;
+
+    rootRef.current.rotation.y = THREE.MathUtils.lerp(
+      rootRef.current.rotation.y,
+      pointer.x * 0.16,
+      0.05
+    );
+    rootRef.current.rotation.x = THREE.MathUtils.lerp(
+      rootRef.current.rotation.x,
+      pointer.y * 0.08,
+      0.05
+    );
+
+    coreRef.current.rotation.y += 0.0032;
+    coreRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.5) * 0.06;
+
+    const scale = 1 + Math.sin(state.clock.elapsedTime * 2.2) * 0.035;
+    coreRef.current.scale.setScalar(scale);
+
+    glowRef.current.position.x = THREE.MathUtils.lerp(
+      glowRef.current.position.x,
+      pointer.x * 1.2,
+      0.06
+    );
+  });
+
+  return (
+    <>
+      <fog attach="fog" args={["#000000", 7, 20]} />
+      <ambientLight intensity={0.45} color="#ffffff" />
+      <directionalLight position={[2, 5, 3]} intensity={0.9} color="#ffffff" />
+      <pointLight position={[0, 2.6, 2.4]} intensity={2.6} color="#46dfff" />
+      <pointLight position={[-3.5, 0.6, 1.8]} intensity={0.8} color="#ffffff" />
+      <pointLight position={[3.5, 0.6, 1.8]} intensity={0.8} color="#66bfff" />
+
+      <group ref={rootRef} position={[0, -0.85, 0]}>
+        <ReflectionFloor />
+        <group ref={coreRef}>
+          <WorldCore />
+          <CoreRings />
+        </group>
+
+        <SmokeField />
+
+        <mesh
+          ref={glowRef}
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[0, -1.17, 0]}
+        >
+          <circleGeometry args={[1.8, 64]} />
+          <meshBasicMaterial
+            color="#8ef7ff"
+            transparent
+            opacity={0.15}
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+          />
+        </mesh>
+      </group>
+
+      <EffectComposer multisampling={0}>
+        <Bloom intensity={1.9} luminanceThreshold={0.08} luminanceSmoothing={0.42} mipmapBlur />
+      </EffectComposer>
+    </>
+  );
+}
+
+function ReflectionFloor() {
   return (
     <group>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.2, 0]}>
-        <planeGeometry args={[16, 16]} />
-        <meshStandardMaterial color="#050505" roughness={0.9} metalness={0.18} />
+        <planeGeometry args={[18, 18]} />
+        <meshStandardMaterial color="#030405" roughness={0.92} metalness={0.22} />
       </mesh>
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.19, 0]}>
-        <ringGeometry args={[1.1, 2.55, 100]} />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.18, 0]}>
+        <ringGeometry args={[0.82, 1.1, 80]} />
+        <meshBasicMaterial
+          color="#d0faff"
+          transparent
+          opacity={0.22}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </mesh>
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.185, 0]}>
+        <ringGeometry args={[1.25, 2.5, 120]} />
         <meshBasicMaterial
           color="#ffffff"
+          transparent
+          opacity={0.07}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+function WorldCore() {
+  return (
+    <group>
+      <mesh>
+        <sphereGeometry args={[1.42, 128, 128]} />
+        <meshStandardMaterial
+          color="#1cc8ff"
+          emissive="#27ffd9"
+          emissiveIntensity={1.2}
+          roughness={0.08}
+          metalness={0.65}
+        />
+      </mesh>
+
+      <mesh scale={1.12}>
+        <sphereGeometry args={[1.42, 128, 128]} />
+        <meshBasicMaterial
+          color="#b8faff"
           transparent
           opacity={0.08}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
       </mesh>
-
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.18, 0]}>
-        <ringGeometry args={[0.7, 1.02, 80]} />
-        <meshBasicMaterial
-          color="#cfc5ff"
-          transparent
-          opacity={0.18}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-        />
-      </mesh>
     </group>
   );
 }
 
-function CoreStructure() {
-  const wiresRef = useRef<THREE.Group | null>(null);
+function CoreRings() {
+  const ringRef = useRef<THREE.Group | null>(null);
 
   useFrame((state) => {
-    if (!wiresRef.current) return;
-    wiresRef.current.rotation.y = Math.sin(state.clock.elapsedTime * 0.6) * 0.08;
+    if (!ringRef.current) return;
+    ringRef.current.rotation.y = state.clock.elapsedTime * 0.45;
+    ringRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.5) * 0.22;
   });
 
   return (
-    <group position={[0, 0, 0]}>
-      <Block pos={[-0.8, -0.1, 0.2]} size={[0.38, 1.45, 0.38]} color="#1a1a1d" metal />
-      <Block pos={[-0.38, -0.35, -0.15]} size={[0.34, 0.95, 0.34]} color="#d6ccb7" />
-      <Block pos={[0.0, 0.18, 0.0]} size={[0.44, 1.95, 0.44]} color="#2e2f33" metal />
-      <Block pos={[0.48, -0.38, 0.14]} size={[0.34, 1.05, 0.34]} color="#0f1012" metal />
-      <Block pos={[0.92, -0.02, -0.18]} size={[0.42, 1.55, 0.42]} color="#d6ccb7" />
-
-      <GlassBlock pos={[-0.56, 0.1, 0.44]} size={[0.4, 1.2, 0.24]} />
-      <GlassBlock pos={[0.62, -0.2, 0.42]} size={[0.36, 1.08, 0.24]} />
-      <GlassBlock pos={[0.08, -0.08, 0.65]} size={[0.24, 1.42, 0.22]} />
-
-      <group ref={wiresRef}>
-        <WireFrame />
-      </group>
-    </group>
-  );
-}
-
-function Block({
-  pos,
-  size,
-  color,
-  metal,
-}: {
-  pos: [number, number, number];
-  size: [number, number, number];
-  color: string;
-  metal?: boolean;
-}) {
-  return (
-    <mesh position={pos}>
-      <boxGeometry args={size} />
-      <meshStandardMaterial
-        color={color}
-        roughness={metal ? 0.28 : 0.6}
-        metalness={metal ? 0.72 : 0.15}
-      />
-    </mesh>
-  );
-}
-
-function GlassBlock({
-  pos,
-  size,
-}: {
-  pos: [number, number, number];
-  size: [number, number, number];
-}) {
-  return (
-    <mesh position={pos}>
-      <boxGeometry args={size} />
-      <meshPhysicalMaterial
-        color="#ffffff"
-        transparent
-        opacity={0.2}
-        transmission={0.92}
-        roughness={0.1}
-        thickness={0.5}
-        metalness={0.02}
-        reflectivity={0.55}
-      />
-    </mesh>
-  );
-}
-
-function WireFrame() {
-  const points = useMemo(
-    () => [
-      new THREE.Vector3(-0.9, -0.25, 0.52),
-      new THREE.Vector3(-0.2, -0.25, 0.52),
-      new THREE.Vector3(0.05, 0.18, 0.52),
-      new THREE.Vector3(0.85, 0.18, 0.52),
-      new THREE.Vector3(1.1, -0.1, 0.52),
-    ],
-    []
-  );
-
-  const curve = useMemo(() => new THREE.CatmullRomCurve3(points), [points]);
-  const tubeGeom = useMemo(() => new THREE.TubeGeometry(curve, 64, 0.02, 8, false), [curve]);
-
-  return (
-    <group>
-      <mesh geometry={tubeGeom}>
+    <group ref={ringRef}>
+      <mesh rotation={[Math.PI / 2.5, 0, 0]}>
+        <torusGeometry args={[1.9, 0.018, 16, 120]} />
         <meshBasicMaterial
-          color="#d8cbff"
+          color="#d8faff"
           transparent
-          opacity={0.65}
+          opacity={0.35}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
       </mesh>
 
-      <mesh position={[0.95, 0.48, 0.5]}>
-        <sphereGeometry args={[0.06, 18, 18]} />
+      <mesh rotation={[Math.PI / 2.2, 0, Math.PI / 2]}>
+        <torusGeometry args={[1.65, 0.015, 16, 120]} />
         <meshBasicMaterial
-          color="#ffffff"
+          color="#9ef8ff"
           transparent
-          opacity={0.8}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-        />
-      </mesh>
-
-      <mesh position={[0.55, 0.2, 0.5]}>
-        <sphereGeometry args={[0.05, 18, 18]} />
-        <meshBasicMaterial
-          color="#d8cbff"
-          transparent
-          opacity={0.76}
+          opacity={0.26}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
       </mesh>
     </group>
+  );
+}
+
+function SmokeField() {
+  const ref = useRef<THREE.Points | null>(null);
+
+  const positions = useMemo(() => {
+    const count = 240;
+    const pos = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const i3 = i * 3;
+      pos[i3 + 0] = (Math.random() - 0.5) * 9;
+      pos[i3 + 1] = Math.random() * 4 - 1.6;
+      pos[i3 + 2] = (Math.random() - 0.5) * 5;
+    }
+    return pos;
+  }, []);
+
+  useFrame((state) => {
+    if (!ref.current) return;
+    ref.current.rotation.y += 0.0009;
+    ref.current.rotation.z = Math.sin(state.clock.elapsedTime * 0.15) * 0.05;
+  });
+
+  return (
+    <points ref={ref}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+      </bufferGeometry>
+      <pointsMaterial size={0.05} color="#ffffff" transparent opacity={0.55} />
+    </points>
   );
 }
