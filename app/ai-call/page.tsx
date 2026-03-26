@@ -19,7 +19,7 @@ const FREE_CALL_DURATION_SECONDS = 5 * 60;
 const AI_NUMBER_PREFIX = "+70 20 ";
 const REQUIRED_LOCAL_NUMBER = "7777777";
 
-const LIVE_MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025";
+const LIVE_MODEL = "models/gemini-2.0-flash-exp";
 
 export default function AICallPage() {
   const [phoneNumber, setPhoneNumber] = useState("");

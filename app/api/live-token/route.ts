@@ -6,18 +6,11 @@ const ai = new GoogleGenAI({
 
 export async function POST() {
   try {
-    const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-    const newSessionExpireTime = new Date(
-      Date.now() + 60 * 1000
-    ).toISOString();
-
     const token = await ai.authTokens.create({
       config: {
         uses: 1,
-        expireTime,
-        newSessionExpireTime,
         liveConnectConstraints: {
-          model: "gemini-2.5-flash-native-audio-preview-12-2025",
+          model: "gemini-2.0-flash-exp",
           config: {
             sessionResumption: {},
             temperature: 0.7,
@@ -32,8 +25,6 @@ export async function POST() {
 
     return Response.json({
       token: token.name,
-      expireTime,
-      newSessionExpireTime,
     });
   } catch (error) {
     console.error("LIVE TOKEN ERROR:", error);
