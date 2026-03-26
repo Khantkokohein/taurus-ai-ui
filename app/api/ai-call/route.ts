@@ -6,15 +6,30 @@ const ai = new GoogleGenAI({
 
 export async function POST(req: Request) {
   try {
-    const { prompt } = await req.json();
+    const body = await req.json();
+    const prompt = body?.prompt;
+
+    if (!prompt || typeof prompt !== "string") {
+      return Response.json(
+        { error: "Prompt is required." },
+        { status: 400 }
+      );
+    }
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: prompt || "Hello",
+      model: "gemini-1.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: prompt }],
+        },
+      ],
     });
 
+    const text = response?.text || "I am here and listening.";
+
     return Response.json({
-      text: response.text,
+      text,
     });
   } catch (error) {
     console.error("AI CALL ERROR:", error);

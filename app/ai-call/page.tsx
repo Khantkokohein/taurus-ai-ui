@@ -3,33 +3,36 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type CallState = "idle" | "ringing" | "connected" | "ended";
-type VoiceState = "idle" | "ai-speaking" | "listening" | "thinking";
+type VoiceState = "silent" | "listening" | "speaking" | "thinking";
 
 const RING_DURATION_SECONDS = 20;
 const AI_NUMBER_PREFIX = "+70 20 ";
 const REQUIRED_LOCAL_NUMBER = "7777777";
 
-// Burmese support first. If you want English-first, change to "en-US"
-const RECOGNITION_LANG = "my-MM";
+// For best browser support.
+// If you want Burmese-only recognition later, change to "my-MM".
+const RECOGNITION_LANG = "en-US";
 
 export default function AICallPage() {
-  const [callState, setCallState] = useState<CallState>("idle");
-  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
-  const [statusText, setStatusText] = useState("Enter 7777777 and start the call.");
-  const [errorText, setErrorText] = useState("");
-  const [replyText, setReplyText] = useState("");
-  const [heardText, setHeardText] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [callState, setCallState] = useState<CallState>("idle");
+  const [voiceState, setVoiceState] = useState<VoiceState>("silent");
   const [ringCountdown, setRingCountdown] = useState(RING_DURATION_SECONDS);
-  const [currentRingtone, setCurrentRingtone] = useState("");
-  const [speechUnlocked, setSpeechUnlocked] = useState(false);
+  const [statusText, setStatusText] = useState("Enter 7777777 to start your Taurus AI call.");
+  const [errorText, setErrorText] = useState("");
+  const [heardText, setHeardText] = useState("");
+  const [replyText, setReplyText] = useState("");
+  const [currentRingtonePath, setCurrentRingtonePath] = useState("");
+  const [micReady, setMicReady] = useState(false);
 
   const ringtoneRef = useRef<HTMLAudioElement | null>(null);
-  const recognitionRef = useRef<any>(null);
   const ringTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recognitionRef = useRef<any>(null);
+
   const callActiveRef = useRef(false);
   const aiSpeakingRef = useRef(false);
   const recognitionStartingRef = useRef(false);
+  const speechUnlockedRef = useRef(false);
 
   const ringtones = useMemo(
     () => ["/ringtone-1.mp3", "/ringtone-2.mp3"],
@@ -55,7 +58,10 @@ export default function AICallPage() {
 
     recognition.onstart = () => {
       recognitionStartingRef.current = false;
+
       if (!callActiveRef.current) return;
+
+      setMicReady(true);
       setVoiceState("listening");
       setStatusText("Listening...");
     };
@@ -69,8 +75,8 @@ export default function AICallPage() {
       if (!result) return;
 
       setHeardText(result);
-      setStatusText(`You: ${result}`);
       setVoiceState("thinking");
+      setStatusText(`You: ${result}`);
 
       try {
         stopRecognition();
@@ -86,25 +92,22 @@ export default function AICallPage() {
         });
 
         const data = await res.json();
-
-        if (!res.ok) {
-          throw new Error(data?.error || "AI request failed");
-        }
-
         const answer = data?.text || "I am here and listening.";
+
         setReplyText(answer);
         setStatusText("Taurus AI is speaking...");
         speakText(answer, () => {
           if (callActiveRef.current) {
-            startRecognition();
+            setTimeout(() => startRecognition(), 700);
           }
         });
       } catch (error) {
         console.error(error);
         setErrorText("AI response failed.");
-        setVoiceState("idle");
+        setVoiceState("silent");
+
         if (callActiveRef.current) {
-          setTimeout(() => startRecognition(), 600);
+          setTimeout(() => startRecognition(), 800);
         }
       }
     };
@@ -112,45 +115,54 @@ export default function AICallPage() {
     recognition.onerror = (event: any) => {
       console.error("Recognition error:", event);
       recognitionStartingRef.current = false;
+      setMicReady(false);
 
       if (!callActiveRef.current) return;
 
-      setVoiceState("idle");
+      const err = event?.error || "unknown";
+      setVoiceState("silent");
+      setStatusText(`Mic error: ${err}`);
+
+      if (err === "not-allowed" || err === "service-not-allowed") {
+        setErrorText("Microphone access was blocked.");
+        return;
+      }
+
+      setTimeout(() => {
+        if (callActiveRef.current && !aiSpeakingRef.current) {
+          startRecognition();
+        }
+      }, 1000);
+    };
+
+    recognition.onend = () => {
+      recognitionStartingRef.current = false;
+      setMicReady(false);
+
+      if (!callActiveRef.current) return;
+      if (aiSpeakingRef.current) return;
+
       setStatusText("Mic stopped. Restarting...");
 
       setTimeout(() => {
         if (callActiveRef.current && !aiSpeakingRef.current) {
           startRecognition();
         }
-      }, 800);
-    };
-
-    recognition.onend = () => {
-      recognitionStartingRef.current = false;
-
-      if (!callActiveRef.current) return;
-      if (aiSpeakingRef.current) return;
-
-      setTimeout(() => {
-        if (callActiveRef.current && !aiSpeakingRef.current) {
-          startRecognition();
-        }
-      }, 700);
+      }, 1000);
     };
 
     recognitionRef.current = recognition;
 
-    // preload voices
     window.speechSynthesis.getVoices();
     window.speechSynthesis.onvoiceschanged = () => {
       window.speechSynthesis.getVoices();
     };
 
     return () => {
-      callActiveRef.current = false;
       stopRingtone();
       stopRecognition();
       window.speechSynthesis.cancel();
+      callActiveRef.current = false;
     };
   }, []);
 
@@ -162,34 +174,104 @@ export default function AICallPage() {
     return ringtones[Math.floor(Math.random() * ringtones.length)];
   }
 
+  async function requestMicPermission() {
+    try {
+      setErrorText("");
+      setStatusText("Requesting microphone access...");
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
+
+      stream.getTracks().forEach((track) => track.stop());
+
+      setStatusText("Microphone ready.");
+      return true;
+    } catch (error) {
+      console.error("MIC PERMISSION ERROR:", error);
+      setErrorText("Microphone permission is required.");
+      setStatusText("Mic permission denied.");
+      return false;
+    }
+  }
+
   function unlockSpeechSystem() {
     if (typeof window === "undefined") return;
-    if (speechUnlocked) return;
+    if (speechUnlockedRef.current) return;
 
-    const utterance = new SpeechSynthesisUtterance(" ");
-    utterance.volume = 0;
+    const utterance = new SpeechSynthesisUtterance("Hello");
+    utterance.volume = 0.01;
+    utterance.lang = "en-US";
+
+    utterance.onend = () => {
+      speechUnlockedRef.current = true;
+    };
+
+    utterance.onerror = () => {
+      setErrorText("Voice unlock failed.");
+    };
+
     window.speechSynthesis.speak(utterance);
-    setSpeechUnlocked(true);
   }
 
-  function playRingtone() {
-    if (!ringtoneRef.current) return;
+  function speakText(text: string, onEnd?: () => void) {
+    if (typeof window === "undefined") return;
+    if (!text || text.trim().length < 2) {
+      onEnd?.();
+      return;
+    }
 
-    const randomTone = getRandomRingtone();
-    ringtoneRef.current.src = randomTone;
-    ringtoneRef.current.loop = true;
-    setCurrentRingtone(randomTone.split("/").pop() || "");
+    try {
+      window.speechSynthesis.cancel();
 
-    ringtoneRef.current.play().catch((error) => {
-      console.error("Ringtone playback failed:", error);
-      setErrorText("Ringtone could not play.");
-    });
-  }
+      const utterance = new SpeechSynthesisUtterance(text);
+      const hasMyanmar = /[\u1000-\u109F]/.test(text);
 
-  function stopRingtone() {
-    if (!ringtoneRef.current) return;
-    ringtoneRef.current.pause();
-    ringtoneRef.current.currentTime = 0;
+      utterance.lang = hasMyanmar ? "my-MM" : "en-US";
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      utterance.volume = 1;
+
+      const voices = window.speechSynthesis.getVoices();
+      if (voices.length > 0) {
+        const matchedVoice =
+          voices.find((v) => hasMyanmar && v.lang.toLowerCase().includes("my")) ||
+          voices.find((v) => !hasMyanmar && v.lang.toLowerCase().includes("en")) ||
+          voices[0];
+
+        if (matchedVoice) {
+          utterance.voice = matchedVoice;
+        }
+      }
+
+      utterance.onstart = () => {
+        aiSpeakingRef.current = true;
+        setVoiceState("speaking");
+        setStatusText("Taurus AI is speaking...");
+      };
+
+      utterance.onend = () => {
+        aiSpeakingRef.current = false;
+        setVoiceState("silent");
+        setStatusText("Listening...");
+        onEnd?.();
+      };
+
+      utterance.onerror = (event) => {
+        console.error("VOICE ERROR:", event);
+        aiSpeakingRef.current = false;
+        setVoiceState("silent");
+        setErrorText("Voice playback failed.");
+        onEnd?.();
+      };
+
+      window.speechSynthesis.speak(utterance);
+    } catch (error) {
+      console.error("SPEAK ERROR:", error);
+      setErrorText("Voice playback failed.");
+      onEnd?.();
+    }
   }
 
   function startRecognition() {
@@ -199,11 +281,14 @@ export default function AICallPage() {
     if (recognitionStartingRef.current) return;
 
     recognitionStartingRef.current = true;
+    setStatusText("Starting microphone...");
 
     try {
       recognitionRef.current.start();
-    } catch {
+    } catch (error) {
+      console.error("RECOGNITION START ERROR:", error);
       recognitionStartingRef.current = false;
+      setStatusText("Mic start failed.");
     }
   }
 
@@ -213,49 +298,24 @@ export default function AICallPage() {
     } catch {}
   }
 
-  function speakText(text: string, onEnd?: () => void) {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
+  function playRingtone() {
+    if (!ringtoneRef.current) return;
 
-    window.speechSynthesis.cancel();
+    const randomTone = getRandomRingtone();
+    ringtoneRef.current.src = randomTone;
+    ringtoneRef.current.loop = true;
+    setCurrentRingtonePath(randomTone.split("/").pop() || "");
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    const hasMyanmar = /[\u1000-\u109F]/.test(text);
-    utterance.lang = hasMyanmar ? "my-MM" : "en-US";
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    utterance.volume = 1;
+    ringtoneRef.current.play().catch((error) => {
+      console.error("Ringtone playback failed:", error);
+      setErrorText("Ringtone could not play. Check the audio files in /public.");
+    });
+  }
 
-    const voices = window.speechSynthesis.getVoices();
-    if (voices.length > 0) {
-      const matchedVoice =
-        voices.find((v) => hasMyanmar && v.lang.toLowerCase().includes("my")) ||
-        voices.find((v) => !hasMyanmar && v.lang.toLowerCase().includes("en")) ||
-        voices[0];
-
-      if (matchedVoice) utterance.voice = matchedVoice;
-    }
-
-    utterance.onstart = () => {
-      aiSpeakingRef.current = true;
-      setVoiceState("ai-speaking");
-      setStatusText("Taurus AI is speaking...");
-    };
-
-    utterance.onend = () => {
-      aiSpeakingRef.current = false;
-      setVoiceState("idle");
-      setStatusText("Listening...");
-      onEnd?.();
-    };
-
-    utterance.onerror = () => {
-      aiSpeakingRef.current = false;
-      setVoiceState("idle");
-      setErrorText("Voice playback failed.");
-      onEnd?.();
-    };
-
-    window.speechSynthesis.speak(utterance);
+  function stopRingtone() {
+    if (!ringtoneRef.current) return;
+    ringtoneRef.current.pause();
+    ringtoneRef.current.currentTime = 0;
   }
 
   function beginRingCountdown() {
@@ -277,18 +337,19 @@ export default function AICallPage() {
   function connectCall() {
     stopRingtone();
     setCallState("connected");
+    setVoiceState("speaking");
     setStatusText("Connected");
-    setVoiceState("ai-speaking");
 
-    // user gesture already happened from Start Call button
     speakText("Hello, I am Taurus AI. How can I help you today?", () => {
       if (callActiveRef.current) {
-        startRecognition();
+        setTimeout(() => {
+          startRecognition();
+        }, 500);
       }
     });
   }
 
-  function startCall() {
+  async function startCall() {
     if (!phoneNumber.trim()) {
       setErrorText("Enter number 7777777 first.");
       return;
@@ -299,12 +360,15 @@ export default function AICallPage() {
       return;
     }
 
+    const micOk = await requestMicPermission();
+    if (!micOk) return;
+
     setErrorText("");
     setReplyText("");
     setHeardText("");
     setRingCountdown(RING_DURATION_SECONDS);
     setCallState("ringing");
-    setVoiceState("idle");
+    setVoiceState("silent");
     setStatusText(`Calling ${AI_NUMBER_PREFIX}${phoneNumber}...`);
     callActiveRef.current = true;
 
@@ -316,12 +380,35 @@ export default function AICallPage() {
   function endCall() {
     callActiveRef.current = false;
     setCallState("ended");
-    setVoiceState("idle");
+    setVoiceState("silent");
     setStatusText("Call ended.");
-    stopRingtone();
-    stopRecognition();
+    setMicReady(false);
+
     if (ringTimerRef.current) clearInterval(ringTimerRef.current);
     ringTimerRef.current = null;
+
+    stopRingtone();
+    stopRecognition();
+    window.speechSynthesis.cancel();
+  }
+
+  function resetCall() {
+    callActiveRef.current = false;
+    setCallState("idle");
+    setVoiceState("silent");
+    setRingCountdown(RING_DURATION_SECONDS);
+    setStatusText("Enter 7777777 to start your Taurus AI call.");
+    setErrorText("");
+    setHeardText("");
+    setReplyText("");
+    setCurrentRingtonePath("");
+    setMicReady(false);
+
+    if (ringTimerRef.current) clearInterval(ringTimerRef.current);
+    ringTimerRef.current = null;
+
+    stopRingtone();
+    stopRecognition();
     window.speechSynthesis.cancel();
   }
 
@@ -340,15 +427,11 @@ export default function AICallPage() {
             <div className="mx-auto mb-4 h-1.5 w-28 rounded-full bg-white/10" />
 
             <div className="mb-6 flex items-center justify-between text-xs text-white/45">
-              <span>{currentRingtone || "No ringtone yet"}</span>
+              <span>{currentRingtonePath || "No ringtone yet"}</span>
               <span>
                 {callState === "connected"
-                  ? voiceState === "listening"
-                    ? "Mic on"
-                    : voiceState === "thinking"
-                    ? "Thinking"
-                    : voiceState === "ai-speaking"
-                    ? "AI speaking"
+                  ? micReady
+                    ? "Mic ready"
                     : "Connected"
                   : "Mic off"}
               </span>
@@ -365,7 +448,7 @@ export default function AICallPage() {
                     "relative flex h-44 w-44 items-center justify-center rounded-full border border-white/10 transition-all duration-500",
                     voiceState === "listening"
                       ? "shadow-[0_0_65px_rgba(34,197,94,0.22)]"
-                      : voiceState === "ai-speaking"
+                      : voiceState === "speaking"
                       ? "shadow-[0_0_65px_rgba(56,189,248,0.22)]"
                       : voiceState === "thinking"
                       ? "shadow-[0_0_65px_rgba(250,204,21,0.18)]"
@@ -375,7 +458,7 @@ export default function AICallPage() {
                   <div className="absolute inset-4 rounded-full border border-white/5" />
                   <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.06),transparent_65%)] blur-2xl" />
 
-                  {(voiceState === "ai-speaking" || voiceState === "listening") && (
+                  {(voiceState === "speaking" || voiceState === "listening") && (
                     <div className="absolute inset-0 flex items-end justify-center gap-1 px-8 pb-10">
                       {waveformBars.map((_, index) => (
                         <span
@@ -383,7 +466,7 @@ export default function AICallPage() {
                           className="w-1 rounded-full bg-white/80 animate-pulse"
                           style={{
                             height:
-                              voiceState === "ai-speaking"
+                              voiceState === "speaking"
                                 ? `${20 + ((index * 9) % 38)}px`
                                 : `${12 + ((index * 5) % 24)}px`,
                             animationDuration: `${0.5 + (index % 4) * 0.15}s`,
@@ -488,19 +571,7 @@ export default function AICallPage() {
 
             <div className="mt-6 flex items-center justify-center gap-4">
               <button
-                onClick={() => {
-                  setHeardText("");
-                  setReplyText("");
-                  setErrorText("");
-                  setStatusText("Reset done.");
-                  setCallState("idle");
-                  setVoiceState("idle");
-                  setRingCountdown(RING_DURATION_SECONDS);
-                  stopRingtone();
-                  stopRecognition();
-                  window.speechSynthesis.cancel();
-                  callActiveRef.current = false;
-                }}
+                onClick={resetCall}
                 className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-white/5 text-xl transition hover:bg-white/10"
                 aria-label="Reset call"
               >
@@ -528,7 +599,7 @@ export default function AICallPage() {
               <div className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-white/5 text-xl">
                 {voiceState === "listening"
                   ? "🎙️"
-                  : voiceState === "ai-speaking"
+                  : voiceState === "speaking"
                   ? "🔊"
                   : voiceState === "thinking"
                   ? "🧠"
