@@ -49,11 +49,13 @@ export default function AICallPage() {
   const outputAudioContextRef = useRef<AudioContext | null>(null);
   const mediaSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const silentGainRef = useRef<GainNode | null>(null);
 
   const outputQueueRef = useRef<Float32Array[]>([]);
   const outputDrainRunningRef = useRef(false);
   const micStreamingStartedRef = useRef(false);
   const initialGreetingSentRef = useRef(false);
+  const liveConnectedRef = useRef(false);
 
   const ringtones = useMemo(
     () => ["/ringtone-1.mp3", "/ringtone-2.mp3"],
@@ -119,6 +121,11 @@ export default function AICallPage() {
       mediaSourceRef.current = null;
     }
 
+    if (silentGainRef.current) {
+      silentGainRef.current.disconnect();
+      silentGainRef.current = null;
+    }
+
     if (inputAudioContextRef.current) {
       inputAudioContextRef.current.close().catch(() => {});
       inputAudioContextRef.current = null;
@@ -138,6 +145,7 @@ export default function AICallPage() {
 
     micStreamingStartedRef.current = false;
     initialGreetingSentRef.current = false;
+    liveConnectedRef.current = false;
     outputQueueRef.current = [];
     outputDrainRunningRef.current = false;
     setVoiceState("silent");
@@ -221,8 +229,11 @@ export default function AICallPage() {
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
+      let resolved = false;
+
       ws.onopen = () => {
         setStatusText("Live session connected.");
+        liveConnectedRef.current = true;
 
         ws.send(
           JSON.stringify({
@@ -244,7 +255,11 @@ export default function AICallPage() {
           })
         );
 
-        sendInitialGreetingPrompt();
+        window.setTimeout(() => {
+          sendInitialGreetingPrompt();
+        }, 300);
+
+        resolved = true;
         resolve();
       };
 
@@ -254,7 +269,8 @@ export default function AICallPage() {
 
           const serverContent =
             message.serverContent || message.server_content;
-          const modelTurn = serverContent?.modelTurn || serverContent?.model_turn;
+          const modelTurn =
+            serverContent?.modelTurn || serverContent?.model_turn;
           const inputTranscription =
             serverContent?.inputTranscription ||
             serverContent?.input_transcription;
@@ -304,12 +320,22 @@ export default function AICallPage() {
       ws.onerror = (event) => {
         console.error("LIVE WS ERROR:", event);
         setErrorText("Live connection error.");
-        reject(new Error("WebSocket connection failed"));
+        if (!resolved) {
+          reject(new Error("WebSocket connection failed"));
+        }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        console.error("LIVE WS CLOSED:", event.code, event.reason);
+        liveConnectedRef.current = false;
         setVoiceState("silent");
         setStatusText("Live session closed.");
+
+        if (!resolved) {
+          reject(
+            new Error(`WebSocket closed before connect: ${event.code}`)
+          );
+        }
       };
     });
   }
@@ -317,6 +343,7 @@ export default function AICallPage() {
   function startMicrophoneStreaming() {
     if (!streamRef.current || !wsRef.current) return;
     if (processorRef.current) return;
+    if (wsRef.current.readyState !== WebSocket.OPEN) return;
 
     const AudioCtx =
       window.AudioContext || (window as any).webkitAudioContext;
@@ -330,8 +357,13 @@ export default function AICallPage() {
     const processor = inputAudioContext.createScriptProcessor(4096, 1, 1);
     processorRef.current = processor;
 
+    const silentGain = inputAudioContext.createGain();
+    silentGain.gain.value = 0;
+    silentGainRef.current = silentGain;
+
     source.connect(processor);
-    processor.connect(inputAudioContext.destination);
+    processor.connect(silentGain);
+    silentGain.connect(inputAudioContext.destination);
 
     setVoiceState("listening");
     setStatusText("Listening...");
@@ -374,7 +406,8 @@ export default function AICallPage() {
       float32[i] = int16[i] / 32768;
     }
 
-outputQueueRef.current.push(Float32Array.from(float32));
+    outputQueueRef.current.push(Float32Array.from(float32));
+
     if (!outputDrainRunningRef.current) {
       drainOutputQueue();
     }
@@ -398,12 +431,15 @@ outputQueueRef.current.push(Float32Array.from(float32));
     outputDrainRunningRef.current = true;
     setVoiceState("speaking");
     setStatusText("Taurus AI is speaking...");
-const buffer = outputAudioContext.createBuffer(1, next.length, 24000);
-buffer.copyToChannel(Float32Array.from(next), 0);
 
-const source = outputAudioContext.createBufferSource();
-source.buffer = buffer;
-source.connect(outputAudioContext.destination);
+    const buffer = outputAudioContext.createBuffer(1, next.length, 24000);
+    buffer.copyToChannel(Float32Array.from(next), 0);
+
+    const source = outputAudioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(outputAudioContext.destination);
+    source.start();
+
     source.onended = () => {
       drainOutputQueue();
     };
