@@ -15,19 +15,23 @@ type VoiceState = "silent" | "listening" | "speaking";
 
 const RING_DURATION_SECONDS = 20;
 const FREE_CALL_DURATION_SECONDS = 5 * 60;
-const TAURUS_GREETING =
-  "Hello, I am Taurus AI. Your support line is now connected. How can I help you today?";
 
 const AI_NUMBER_PREFIX = "+70 20 ";
 const REQUIRED_LOCAL_NUMBER = "7777777";
+
+const LIVE_MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025";
 
 export default function AICallPage() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [callState, setCallState] = useState<CallState>("idle");
   const [voiceState, setVoiceState] = useState<VoiceState>("silent");
   const [ringCountdown, setRingCountdown] = useState(RING_DURATION_SECONDS);
-  const [sessionSecondsLeft, setSessionSecondsLeft] = useState(FREE_CALL_DURATION_SECONDS);
-  const [statusText, setStatusText] = useState("Enter 7777777 to start your Taurus AI call.");
+  const [sessionSecondsLeft, setSessionSecondsLeft] = useState(
+    FREE_CALL_DURATION_SECONDS
+  );
+  const [statusText, setStatusText] = useState(
+    "Enter 7777777 to start your Taurus AI call."
+  );
   const [micReady, setMicReady] = useState(false);
   const [errorText, setErrorText] = useState("");
   const [currentRingtonePath, setCurrentRingtonePath] = useState("");
@@ -35,10 +39,21 @@ export default function AICallPage() {
   const ringtoneRef = useRef<HTMLAudioElement | null>(null);
   const ringTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const recognitionRef = useRef<any>(null);
-  const speechSynthesisRef = useRef<SpeechSynthesis | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const isMountedRef = useRef(true);
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const liveTokenRef = useRef<string | null>(null);
+
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
+  const outputAudioContextRef = useRef<AudioContext | null>(null);
+  const mediaSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+
+  const outputQueueRef = useRef<Float32Array[]>([]);
+  const outputDrainRunningRef = useRef(false);
+  const micStreamingStartedRef = useRef(false);
+  const initialGreetingSentRef = useRef(false);
 
   const ringtones = useMemo(
     () => ["/ringtone-1.mp3", "/ringtone-2.mp3"],
@@ -46,20 +61,18 @@ export default function AICallPage() {
   );
 
   useEffect(() => {
-    speechSynthesisRef.current =
-      typeof window !== "undefined" ? window.speechSynthesis : null;
-
     return () => {
       isMountedRef.current = false;
       stopAllAudio();
-      stopRecognition();
       stopTimers();
       stopMediaStream();
+      closeLiveSession();
     };
   }, []);
 
   const formattedRingCountdown = formatClock(ringCountdown);
   const formattedSessionCountdown = formatClock(sessionSecondsLeft);
+
   const fullAICallNumber = phoneNumber
     ? `${AI_NUMBER_PREFIX}${phoneNumber}`
     : `${AI_NUMBER_PREFIX}•••••••`;
@@ -89,33 +102,311 @@ export default function AICallPage() {
       ringtoneRef.current.pause();
       ringtoneRef.current.currentTime = 0;
     }
-    if (speechSynthesisRef.current) {
-      speechSynthesisRef.current.cancel();
-    }
+
+    outputQueueRef.current = [];
+    outputDrainRunningRef.current = false;
   }
 
-  function stopRecognition() {
-    try {
-      recognitionRef.current?.stop?.();
-    } catch {}
+  function closeLiveSession() {
+    if (processorRef.current) {
+      processorRef.current.disconnect();
+      processorRef.current.onaudioprocess = null;
+      processorRef.current = null;
+    }
+
+    if (mediaSourceRef.current) {
+      mediaSourceRef.current.disconnect();
+      mediaSourceRef.current = null;
+    }
+
+    if (inputAudioContextRef.current) {
+      inputAudioContextRef.current.close().catch(() => {});
+      inputAudioContextRef.current = null;
+    }
+
+    if (outputAudioContextRef.current) {
+      outputAudioContextRef.current.close().catch(() => {});
+      outputAudioContextRef.current = null;
+    }
+
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch {}
+      wsRef.current = null;
+    }
+
+    micStreamingStartedRef.current = false;
+    initialGreetingSentRef.current = false;
+    outputQueueRef.current = [];
+    outputDrainRunningRef.current = false;
+    setVoiceState("silent");
   }
 
   async function prepareMic() {
     try {
       setErrorText("");
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: false,
       });
+
       streamRef.current = stream;
       setMicReady(true);
       return true;
     } catch (error) {
       console.error(error);
-      setErrorText("Microphone permission is required for Taurus AI voice support.");
+      setErrorText(
+        "Microphone permission is required for Taurus AI voice support."
+      );
       setMicReady(false);
       return false;
     }
+  }
+
+  async function getLiveToken() {
+    const response = await fetch("/api/live-token", {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to get live token");
+    }
+
+    const data = await response.json();
+
+    if (!data?.token) {
+      throw new Error("Live token missing");
+    }
+
+    liveTokenRef.current = data.token;
+    return data.token as string;
+  }
+
+  function sendInitialGreetingPrompt() {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (initialGreetingSentRef.current) return;
+
+    initialGreetingSentRef.current = true;
+
+    wsRef.current.send(
+      JSON.stringify({
+        clientContent: {
+          turns: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text:
+                    "Answer the phone now. Say: Hello, I am Taurus AI. How can I help you today? Then wait for the caller to speak.",
+                },
+              ],
+            },
+          ],
+          turnComplete: true,
+        },
+      })
+    );
+  }
+
+  async function connectLiveSession() {
+    const token = liveTokenRef.current || (await getLiveToken());
+
+    const wsUrl =
+      "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained" +
+      `?access_token=${encodeURIComponent(token)}`;
+
+    return await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setStatusText("Live session connected.");
+
+        ws.send(
+          JSON.stringify({
+            setup: {
+              model: LIVE_MODEL,
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+                temperature: 0.7,
+              },
+              systemInstruction: {
+                parts: [
+                  {
+                    text:
+                      "You are Taurus AI phone support. Speak naturally, briefly, and clearly like a premium AI phone assistant. Do not be overly verbose.",
+                  },
+                ],
+              },
+            },
+          })
+        );
+
+        sendInitialGreetingPrompt();
+        resolve();
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const message = JSON.parse(event.data);
+
+          const serverContent =
+            message.serverContent || message.server_content;
+          const modelTurn = serverContent?.modelTurn || serverContent?.model_turn;
+          const inputTranscription =
+            serverContent?.inputTranscription ||
+            serverContent?.input_transcription;
+          const outputTranscription =
+            serverContent?.outputTranscription ||
+            serverContent?.output_transcription;
+
+          if (inputTranscription?.text) {
+            setStatusText(`Heard: ${inputTranscription.text}`);
+          }
+
+          if (outputTranscription?.text) {
+            setStatusText(`Taurus AI: ${outputTranscription.text}`);
+          }
+
+          const parts = modelTurn?.parts || [];
+          let receivedAudio = false;
+
+          for (const part of parts) {
+            const inlineData = part.inlineData || part.inline_data;
+            if (inlineData?.data) {
+              receivedAudio = true;
+              playPcm24kBase64(inlineData.data);
+            }
+          }
+
+          const generationComplete =
+            serverContent?.generationComplete ||
+            serverContent?.generation_complete;
+
+          if (generationComplete) {
+            if (!micStreamingStartedRef.current) {
+              startMicrophoneStreaming();
+              micStreamingStartedRef.current = true;
+            }
+
+            if (!receivedAudio) {
+              setVoiceState("listening");
+              setStatusText("Listening...");
+            }
+          }
+        } catch (error) {
+          console.error("LIVE MESSAGE PARSE ERROR:", error);
+        }
+      };
+
+      ws.onerror = (event) => {
+        console.error("LIVE WS ERROR:", event);
+        setErrorText("Live connection error.");
+        reject(new Error("WebSocket connection failed"));
+      };
+
+      ws.onclose = () => {
+        setVoiceState("silent");
+        setStatusText("Live session closed.");
+      };
+    });
+  }
+
+  function startMicrophoneStreaming() {
+    if (!streamRef.current || !wsRef.current) return;
+    if (processorRef.current) return;
+
+    const AudioCtx =
+      window.AudioContext || (window as any).webkitAudioContext;
+
+    const inputAudioContext = new AudioCtx({ sampleRate: 16000 });
+    inputAudioContextRef.current = inputAudioContext;
+
+    const source = inputAudioContext.createMediaStreamSource(streamRef.current);
+    mediaSourceRef.current = source;
+
+    const processor = inputAudioContext.createScriptProcessor(4096, 1, 1);
+    processorRef.current = processor;
+
+    source.connect(processor);
+    processor.connect(inputAudioContext.destination);
+
+    setVoiceState("listening");
+    setStatusText("Listening...");
+
+    processor.onaudioprocess = (event) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+      const input = event.inputBuffer.getChannelData(0);
+      const pcm16 = float32To16BitPCM(input);
+      const base64 = arrayBufferToBase64(pcm16.buffer);
+
+      wsRef.current.send(
+        JSON.stringify({
+          realtimeInput: {
+            audio: {
+              data: base64,
+              mimeType: "audio/pcm;rate=16000",
+            },
+          },
+        })
+      );
+    };
+  }
+
+  function playPcm24kBase64(base64: string) {
+    const AudioCtx =
+      window.AudioContext || (window as any).webkitAudioContext;
+
+    const outputAudioContext =
+      outputAudioContextRef.current ||
+      new AudioCtx({ sampleRate: 24000 });
+
+    outputAudioContextRef.current = outputAudioContext;
+
+    const bytes = base64ToUint8Array(base64);
+    const int16 = new Int16Array(bytes.buffer);
+    const float32 = new Float32Array(int16.length);
+
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768;
+    }
+
+outputQueueRef.current.push(Float32Array.from(float32));
+    if (!outputDrainRunningRef.current) {
+      drainOutputQueue();
+    }
+  }
+
+  function drainOutputQueue() {
+    const outputAudioContext = outputAudioContextRef.current;
+    if (!outputAudioContext) {
+      outputDrainRunningRef.current = false;
+      return;
+    }
+
+    const next = outputQueueRef.current.shift();
+    if (!next) {
+      outputDrainRunningRef.current = false;
+      setVoiceState("listening");
+      setStatusText("Listening...");
+      return;
+    }
+
+    outputDrainRunningRef.current = true;
+    setVoiceState("speaking");
+    setStatusText("Taurus AI is speaking...");
+const buffer = outputAudioContext.createBuffer(1, next.length, 24000);
+buffer.copyToChannel(Float32Array.from(next), 0);
+
+const source = outputAudioContext.createBufferSource();
+source.buffer = buffer;
+source.connect(outputAudioContext.destination);
+    source.onended = () => {
+      drainOutputQueue();
+    };
   }
 
   async function startCall() {
@@ -150,8 +441,10 @@ export default function AICallPage() {
 
   function playRingtone(path: string) {
     if (!ringtoneRef.current) return;
+
     ringtoneRef.current.src = path;
     ringtoneRef.current.loop = true;
+
     ringtoneRef.current.play().catch((error) => {
       console.error("Ringtone playback failed:", error);
       setErrorText("Ringtone could not play. Check the audio files in /public.");
@@ -185,14 +478,19 @@ export default function AICallPage() {
       ringtoneRef.current.currentTime = 0;
     }
 
-    setTimeout(() => {
+    setTimeout(async () => {
       if (!isMountedRef.current) return;
-      setCallState("connected");
-      setStatusText("Connected. Taurus AI is ready.");
-      speakText(TAURUS_GREETING, () => {
-        startVoiceLoop();
-      });
-      beginSessionTimer();
+
+      try {
+        setCallState("connected");
+        setStatusText("Connected. Starting live voice...");
+        await connectLiveSession();
+        beginSessionTimer();
+      } catch (error) {
+        console.error(error);
+        setErrorText("Failed to start live session.");
+        endCall("Live session failed.");
+      }
     }, 900);
   }
 
@@ -210,120 +508,10 @@ export default function AICallPage() {
     }, 1000);
   }
 
-  function speakText(text: string, onEnd?: () => void) {
-    if (!speechSynthesisRef.current) return;
-
-    speechSynthesisRef.current.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "en-US";
-    utterance.rate = 1;
-    utterance.pitch = 1;
-
-    utterance.onstart = () => {
-      setVoiceState("speaking");
-      setStatusText("Taurus AI is speaking...");
-    };
-
-    utterance.onend = () => {
-      setVoiceState("silent");
-      setStatusText("Connected. Listening...");
-      onEnd?.();
-    };
-
-    speechSynthesisRef.current.speak(utterance);
-  }
-
-  function createRecognition() {
-    const SR =
-      typeof window !== "undefined"
-        ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-        : null;
-
-    if (!SR) {
-      setErrorText("This browser does not support Speech Recognition.");
-      return null;
-    }
-
-    const recognition = new SR();
-    recognition.lang = "en-US";
-    recognition.continuous = true;
-    recognition.interimResults = false;
-
-    recognition.onstart = () => {
-      setVoiceState("listening");
-      setStatusText("Listening...");
-    };
-
-    recognition.onresult = async (event: any) => {
-      const result = event.results?.[event.results.length - 1]?.[0]?.transcript?.trim();
-      if (!result) return;
-
-      try {
-        stopRecognition();
-        setVoiceState("silent");
-        setStatusText("Taurus AI is thinking...");
-
-        const response = await fetch("/api/ai-call", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt: result,
-            phoneNumber: `${AI_NUMBER_PREFIX}${phoneNumber}`,
-            mode: "voice_support",
-          }),
-        });
-
-        const data = await response.json();
-        const answer = data?.text || "I am here and listening.";
-
-        speakText(answer, () => {
-          if (callState === "connected") {
-            startVoiceLoop();
-          }
-        });
-      } catch (error) {
-        console.error(error);
-        setErrorText("AI response failed.");
-        if (callState === "connected") {
-          startVoiceLoop();
-        }
-      }
-    };
-
-    recognition.onerror = () => {
-      if (callState === "connected") {
-        setVoiceState("silent");
-        setStatusText("Connected. Listening...");
-        setTimeout(() => startVoiceLoop(), 700);
-      }
-    };
-
-    recognition.onend = () => {
-      if (callState === "connected" && voiceState !== "speaking") {
-        setTimeout(() => startVoiceLoop(), 400);
-      }
-    };
-
-    return recognition;
-  }
-
-  function startVoiceLoop() {
-    if (callState !== "connected") return;
-    if (speechSynthesisRef.current?.speaking) return;
-
-    if (!recognitionRef.current) {
-      recognitionRef.current = createRecognition();
-    }
-
-    try {
-      recognitionRef.current?.start?.();
-    } catch {}
-  }
-
   function endCall(customMessage?: string) {
     stopTimers();
     stopAllAudio();
-    stopRecognition();
+    closeLiveSession();
     stopMediaStream();
     setCallState("ended");
     setVoiceState("silent");
@@ -334,7 +522,7 @@ export default function AICallPage() {
   function resetCall() {
     stopTimers();
     stopAllAudio();
-    stopRecognition();
+    closeLiveSession();
     stopMediaStream();
     setCallState("idle");
     setVoiceState("silent");
@@ -345,6 +533,7 @@ export default function AICallPage() {
     setMicReady(false);
     setCurrentRingtonePath("");
     setPhoneNumber("");
+    liveTokenRef.current = null;
   }
 
   const canStart = callState === "idle" || callState === "ended";
@@ -358,7 +547,9 @@ export default function AICallPage() {
 
       <header className="relative z-20 flex items-center justify-between px-6 py-5 md:px-10">
         <div>
-          <p className="text-[10px] uppercase tracking-[0.4em] text-white/50">Taurus AI</p>
+          <p className="text-[10px] uppercase tracking-[0.4em] text-white/50">
+            Taurus AI
+          </p>
           <h1 className="mt-2 text-sm font-medium tracking-[0.28em] text-white/90">
             AI CALL INTERFACE
           </h1>
@@ -386,12 +577,18 @@ export default function AICallPage() {
               <div className="absolute inset-x-0 top-0 h-28 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.1),transparent_70%)]" />
 
               <div className="mb-6 flex items-center justify-between text-xs text-white/45">
-                <span>{currentRingtonePath ? currentRingtonePath.split("/").pop() : "No ringtone yet"}</span>
+                <span>
+                  {currentRingtonePath
+                    ? currentRingtonePath.split("/").pop()
+                    : "No ringtone yet"}
+                </span>
                 <span>{micReady ? "Mic ready" : "Mic off"}</span>
               </div>
 
               <div className="mb-6 text-center">
-                <p className="text-xs uppercase tracking-[0.35em] text-white/40">Taurus AI Support</p>
+                <p className="text-xs uppercase tracking-[0.35em] text-white/40">
+                  Taurus AI Support
+                </p>
                 <div className="mt-4 flex items-center justify-center">
                   <div
                     className={[
@@ -435,7 +632,9 @@ export default function AICallPage() {
                   {fullAICallNumber}
                 </p>
                 <p className="mt-2 text-sm text-white/55">{statusText}</p>
-                {errorText ? <p className="mt-2 text-sm text-rose-300">{errorText}</p> : null}
+                {errorText ? (
+                  <p className="mt-2 text-sm text-rose-300">{errorText}</p>
+                ) : null}
               </div>
 
               <div className="space-y-3">
@@ -496,7 +695,11 @@ export default function AICallPage() {
                 </button>
 
                 <div className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-white/5 text-xl">
-                  {voiceState === "listening" ? "🎙️" : voiceState === "speaking" ? "🔊" : "•"}
+                  {voiceState === "listening"
+                    ? "🎙️"
+                    : voiceState === "speaking"
+                    ? "🔊"
+                    : "•"}
                 </div>
               </div>
             </div>
@@ -527,4 +730,39 @@ function formatClock(totalSeconds: number) {
     .toString()
     .padStart(2, "0");
   return `${minutes}:${seconds}`;
+}
+
+function float32To16BitPCM(float32Array: Float32Array) {
+  const buffer = new ArrayBuffer(float32Array.length * 2);
+  const view = new DataView(buffer);
+
+  let offset = 0;
+  for (let i = 0; i < float32Array.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, float32Array[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+
+  return new Uint8Array(buffer);
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+
+  return btoa(binary);
+}
+
+function base64ToUint8Array(base64: string) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return bytes;
 }
