@@ -42,3 +42,10 @@ next-env.d.ts
 
 .env*
 firebase-key.json
+
+node_modules/
+.env
+
+.env*
+firebase-key.json
+node_modules/

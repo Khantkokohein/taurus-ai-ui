@@ -6,7 +6,7 @@ export async function POST(req: Request) {
   try {
     if (!apiKey) {
       return Response.json(
-        { text: "SERVER ERROR: GEMINI_API_KEY is missing on server." },
+        { text: "SERVER ERROR: GEMINI_API_KEY is missing." },
         { status: 500 }
       );
     }
@@ -16,7 +16,7 @@ export async function POST(req: Request) {
 
     if (!prompt || typeof prompt !== "string") {
       return Response.json(
-        { text: "SERVER ERROR: Prompt is required." },
+        { text: "Prompt is required." },
         { status: 400 }
       );
     }
@@ -24,22 +24,30 @@ export async function POST(req: Request) {
     const ai = new GoogleGenAI({ apiKey });
 
     const response = await ai.models.generateContent({
-   model: "gemini-3.1-pro-preview",
-      contents: prompt,
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `You are Taurus AI phone support. Answer naturally, briefly, clearly, and in a helpful call-center style. User said: ${prompt}`,
+            },
+          ],
+        },
+      ],
     });
 
     const text =
       (response as any)?.text ||
-      (response as any)?.output_text ||
       (response as any)?.candidates?.[0]?.content?.parts
         ?.map((p: any) => p?.text)
         .filter(Boolean)
         .join("\n") ||
-      "SERVER ERROR: Empty AI response.";
+      "I am here and listening.";
 
     return Response.json({ text });
   } catch (error: any) {
-    console.error("AI CALL ERROR FULL:", error);
+    console.error("AI CALL ERROR:", error);
 
     return Response.json(
       {
