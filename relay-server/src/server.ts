@@ -37,61 +37,96 @@ type ClientMessage =
       type: "stop";
     };
 
+type SafeRecognizeStream = {
+  destroyed?: boolean;
+  writable?: boolean;
+  writableEnded?: boolean;
+  write?: (chunk: Buffer) => boolean;
+  end?: () => void;
+  destroy?: () => void;
+  on?: (...args: any[]) => any;
+};
+
 wss.on("connection", (ws: WebSocket) => {
-  let recognizeStream: any = null;
-  let isStreamActive = false;
+  let recognizeStream: SafeRecognizeStream | null = null;
+  let streamSessionId = 0;
 
   const cleanup = () => {
-    if (!recognizeStream) return;
+    const stream = recognizeStream;
+    recognizeStream = null;
+    streamSessionId += 1;
+
+    if (!stream) return;
 
     try {
-      if (!recognizeStream.destroyed) {
-        recognizeStream.end?.();
-        recognizeStream.destroy?.();
+      if (!stream.destroyed) {
+        stream.end?.();
       }
     } catch {}
 
-    recognizeStream = null;
-    isStreamActive = false;
+    try {
+      if (!stream.destroyed) {
+        stream.destroy?.();
+      }
+    } catch {}
+  };
+
+  const canWriteToStream = (stream: SafeRecognizeStream | null) => {
+    if (!stream) return false;
+    if (stream.destroyed) return false;
+    if (stream.writableEnded) return false;
+    if (stream.writable === false) return false;
+    if (typeof stream.write !== "function") return false;
+    return true;
   };
 
   ws.on("message", (raw) => {
     try {
       const msg = JSON.parse(raw.toString()) as ClientMessage;
 
-      // 🔵 START
       if (msg.type === "start") {
         cleanup();
 
-        recognizeStream = speechClient
-          .streamingRecognize({
-            config: {
-              encoding: "LINEAR16",
-              sampleRateHertz: msg.sampleRateHertz || 16000,
-              languageCode: msg.languageCode || "en-US",
-              enableAutomaticPunctuation: true,
-              model: "latest_long",
-            },
-            interimResults: true,
-          })
-          .on("error", (err: any) => {
-            isStreamActive = false;
+        const currentSessionId = streamSessionId + 1;
+        streamSessionId = currentSessionId;
 
+        const stream = speechClient.streamingRecognize({
+          config: {
+            encoding: "LINEAR16",
+            sampleRateHertz: msg.sampleRateHertz || 16000,
+            languageCode: msg.languageCode || "en-US",
+            enableAutomaticPunctuation: true,
+            model: "latest_long",
+          },
+          interimResults: true,
+        }) as unknown as SafeRecognizeStream;
+
+        recognizeStream = stream;
+
+        stream.on?.("error", (err: unknown) => {
+          if (currentSessionId !== streamSessionId) return;
+
+          try {
             ws.send(
               JSON.stringify({
                 type: "error",
-                message: err?.message || "STT stream error",
+                message:
+                  err instanceof Error ? err.message : "STT stream error",
               })
             );
+          } catch {}
 
-            cleanup();
-          })
-          .on("data", (data: any) => {
-            const result = data.results?.[0];
-            const transcript =
-              result?.alternatives?.[0]?.transcript || "";
-            const isFinal = !!result?.isFinal;
+          cleanup();
+        });
 
+        stream.on?.("data", (data: any) => {
+          if (currentSessionId !== streamSessionId) return;
+
+          const result = data?.results?.[0];
+          const transcript = result?.alternatives?.[0]?.transcript || "";
+          const isFinal = !!result?.isFinal;
+
+          try {
             ws.send(
               JSON.stringify({
                 type: "transcript",
@@ -99,61 +134,51 @@ wss.on("connection", (ws: WebSocket) => {
                 isFinal,
               })
             );
-          });
-
-        isStreamActive = true;
+          } catch {}
+        });
 
         ws.send(JSON.stringify({ type: "started" }));
         return;
       }
+if (msg.type === "audio") {
+  const stream = recognizeStream;
+  if (!canWriteToStream(stream)) return;
 
-      // 🔴 AUDIO
-      if (msg.type === "audio") {
-        if (!recognizeStream || !isStreamActive) return;
+  const safeStream = stream as SafeRecognizeStream;
 
-        // 🧠 CRITICAL FIX
-        if (
-          recognizeStream.destroyed ||
-          recognizeStream.writableEnded ||
-          recognizeStream.writable === false
-        ) {
-          return;
-        }
+  try {
+    const buffer = Buffer.from(msg.audio, "base64");
+    safeStream.write?.(buffer);
+  } catch (error) {
+    console.error("STREAM WRITE ERROR:", error);
+    cleanup();
+  }
 
-        try {
-          const buffer = Buffer.from(msg.audio, "base64");
-          recognizeStream.write(buffer);
-        } catch (err) {
-          console.error("WRITE ERROR:", err);
-          cleanup();
-        }
+  return;
+}
 
-        return;
-      }
-
-      // 🟡 STOP
       if (msg.type === "stop") {
         cleanup();
-        ws.send(JSON.stringify({ type: "stopped" }));
+        try {
+          ws.send(JSON.stringify({ type: "stopped" }));
+        } catch {}
         return;
       }
-    } catch (error: any) {
-      ws.send(
-        JSON.stringify({
-          type: "error",
-          message: error?.message || "Invalid WS message",
-        })
-      );
+    } catch (error: unknown) {
+      try {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message:
+              error instanceof Error ? error.message : "Invalid WS message",
+          })
+        );
+      } catch {}
     }
   });
 
-  ws.on("close", () => {
-    cleanup();
-  });
-
-  ws.on("error", () => {
-    cleanup();
-  });
+  ws.on("close", cleanup);
+  ws.on("error", cleanup);
 });
 
 const PORT = Number(process.env.PORT || 8080);

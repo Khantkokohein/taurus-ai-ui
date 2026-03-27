@@ -105,6 +105,20 @@ export default function AICallPage() {
     audioContextRef.current = null;
   }
 
+  function stopRelay() {
+    if (!wsRef.current) return;
+
+    try {
+      wsRef.current.send(JSON.stringify({ type: "stop" }));
+    } catch {}
+
+    try {
+      wsRef.current.close();
+    } catch {}
+
+    wsRef.current = null;
+  }
+
   function startRelay(languageCode = "en-US") {
     return new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(RELAY_WS_URL);
@@ -146,11 +160,18 @@ export default function AICallPage() {
 
         if (msg.type === "error") {
           setErrorText(msg.message || "Relay error");
+          stopRelay();
+          stopMic();
           fail(msg.message || "Relay error");
+          return;
         }
       };
 
-      ws.onerror = () => fail("WebSocket relay failed");
+      ws.onerror = () => {
+        stopRelay();
+        stopMic();
+        fail("WebSocket relay failed");
+      };
 
       ws.onclose = () => {
         if (callActiveRef.current) {
@@ -158,20 +179,6 @@ export default function AICallPage() {
         }
       };
     });
-  }
-
-  function stopRelay() {
-    if (!wsRef.current) return;
-
-    try {
-      wsRef.current.send(JSON.stringify({ type: "stop" }));
-    } catch {}
-
-    try {
-      wsRef.current.close();
-    } catch {}
-
-    wsRef.current = null;
   }
 
   async function startMicStreaming() {
@@ -402,44 +409,44 @@ export default function AICallPage() {
     <main className="min-h-screen bg-black text-white">
       <audio ref={ringtoneRef} preload="auto" />
 
-      <div className="mx-auto w-full max-w-[430px] px-3 pt-3 pb-[max(20px,env(safe-area-inset-bottom))]">
-        <div className="relative overflow-hidden rounded-[34px] border border-white/10 bg-black shadow-[0_0_60px_rgba(0,180,255,0.08)]">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,123,255,0.14),transparent_48%)]" />
-          <div className="relative z-10 px-4 py-4 sm:px-5 sm:py-5">
-            <div className="mx-auto mb-3 h-1.5 w-24 rounded-full bg-white/15" />
+      <div className="mx-auto w-full max-w-[390px] px-2.5 pt-2.5 pb-[max(16px,env(safe-area-inset-bottom))]">
+        <div className="relative overflow-hidden rounded-[30px] border border-white/10 bg-black shadow-[0_0_50px_rgba(0,180,255,0.08)]">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,123,255,0.12),transparent_48%)]" />
+          <div className="relative z-10 px-4 py-4">
+            <div className="mx-auto mb-3 h-1.5 w-20 rounded-full bg-white/15" />
 
-            <div className="mb-4 flex items-center justify-between text-sm text-white/60">
+            <div className="mb-3 flex items-center justify-between text-[13px] text-white/60">
               <div className="truncate">{currentRingtone || "ringtone-random"}</div>
               <div>{callState === "connected" || callState === "connecting" ? "Connected" : "Standby"}</div>
             </div>
 
-            <p className="mb-4 text-center text-[12px] tracking-[0.38em] text-white/40">
+            <p className="mb-3 text-center text-[11px] tracking-[0.32em] text-white/40">
               TAURUS AI SUPPORT
             </p>
 
-            <div className="mb-5 flex justify-center">
-              <div className="relative flex h-32 w-32 items-center justify-center sm:h-36 sm:w-36">
+            <div className="mb-4 flex justify-center">
+              <div className="relative flex h-28 w-28 items-center justify-center">
                 <div className="absolute inset-0 rounded-full border border-cyan-400/10" />
                 <div className="absolute inset-2 rounded-full border border-cyan-400/10" />
                 <div className="absolute inset-4 rounded-full border border-cyan-400/10" />
                 <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_center,rgba(0,123,255,0.20),transparent_58%)]" />
-                <div className="relative flex h-24 w-24 flex-col items-center justify-center rounded-full border border-white/10 bg-white/[0.08] backdrop-blur sm:h-28 sm:w-28">
-                  <div className="text-3xl font-semibold leading-none sm:text-4xl">LIVE</div>
-                  <div className="mt-2 text-[11px] tracking-[0.3em] text-white/45 sm:text-xs">
+                <div className="relative flex h-20 w-20 flex-col items-center justify-center rounded-full border border-white/10 bg-white/[0.08] backdrop-blur">
+                  <div className="text-[34px] font-semibold leading-none">LIVE</div>
+                  <div className="mt-1.5 text-[10px] tracking-[0.28em] text-white/45">
                     {liveLabel}
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="mb-1 text-center text-[34px] font-semibold leading-none sm:text-[42px]">
+            <div className="mb-1 text-center text-[30px] font-semibold leading-none">
               {AI_NUMBER_PREFIX}
               {phoneNumber || "•••••••"}
             </div>
 
-            <div className="mb-5 text-center text-white/60">{statusText}</div>
+            <div className="mb-4 text-center text-sm text-white/60">{statusText}</div>
 
-            <p className="mb-2 text-[12px] tracking-[0.35em] text-white/35">
+            <p className="mb-2 text-[11px] tracking-[0.32em] text-white/35">
               DIAL TAURUS NUMBER
             </p>
 
@@ -448,10 +455,10 @@ export default function AICallPage() {
               onChange={(e) => setPhoneNumber(formatPhoneNumber(e.target.value))}
               inputMode="numeric"
               placeholder="7777777"
-              className="mb-4 w-full rounded-[22px] border border-white/10 bg-black px-4 py-4 text-center text-[38px] tracking-[0.18em] text-white outline-none sm:text-[46px]"
+              className="mb-3 w-full rounded-[20px] border border-white/10 bg-black px-4 py-3.5 text-center text-[34px] tracking-[0.15em] text-white outline-none"
             />
 
-            <div className="mb-4 grid grid-cols-3 gap-3">
+            <div className="mb-3 grid grid-cols-3 gap-2.5">
               <InfoCard title="Mode" value="Voice Call" />
               <InfoCard
                 title="Mic"
@@ -479,31 +486,31 @@ export default function AICallPage() {
               />
             </div>
 
-            <div className="mb-3 rounded-[22px] border border-white/10 bg-black/80 p-4">
-              <p className="text-[12px] tracking-[0.33em] text-white/35">YOU SAID</p>
-              <div className="mt-3 h-[72px] overflow-y-auto">
-                <p className="text-[17px] leading-7 text-white/90">
+            <div className="mb-3 rounded-[20px] border border-white/10 bg-black/80 p-3.5">
+              <p className="text-[11px] tracking-[0.3em] text-white/35">YOU SAID</p>
+              <div className="mt-2.5 h-[64px] overflow-y-auto">
+                <p className="text-[16px] leading-7 text-white/90">
                   {heardText || "Waiting for your voice..."}
                 </p>
               </div>
             </div>
 
-            <div className="mb-4 rounded-[22px] border border-white/10 bg-black/80 p-4">
-              <p className="text-[12px] tracking-[0.33em] text-white/35">TAURUS AI REPLY</p>
-              <div className="mt-3 h-[72px] overflow-y-auto">
-                <p className="text-[17px] leading-7 text-white/90">
+            <div className="mb-3 rounded-[20px] border border-white/10 bg-black/80 p-3.5">
+              <p className="text-[11px] tracking-[0.3em] text-white/35">TAURUS AI REPLY</p>
+              <div className="mt-2.5 h-[64px] overflow-y-auto">
+                <p className="text-[16px] leading-7 text-white/90">
                   {replyText || "AI reply will appear here..."}
                 </p>
               </div>
             </div>
 
             {errorText ? (
-              <div className="mb-4 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
+              <div className="mb-3 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
                 {errorText}
               </div>
             ) : null}
 
-            <div className="mb-4 flex items-center justify-between">
+            <div className="mb-3 flex items-center justify-between">
               <button
                 type="button"
                 onClick={() => {
@@ -515,7 +522,7 @@ export default function AICallPage() {
                   setVoiceState("silent");
                   setStatusText("Enter 7777777 to start.");
                 }}
-                className="flex h-16 w-16 items-center justify-center rounded-full border border-white/10 bg-white/5 text-2xl text-white/80"
+                className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-white/5 text-xl text-white/80"
               >
                 ↺
               </button>
@@ -525,7 +532,7 @@ export default function AICallPage() {
                 onClick={() =>
                   void (callState === "idle" || callState === "ended" ? startCall() : endCall())
                 }
-                className="flex h-20 w-20 items-center justify-center rounded-full bg-[#ff2d55] text-4xl text-white shadow-[0_0_45px_rgba(255,45,85,0.35)]"
+                className="flex h-[72px] w-[72px] items-center justify-center rounded-full bg-[#ff2d55] text-[34px] text-white shadow-[0_0_38px_rgba(255,45,85,0.35)]"
               >
                 {callState === "idle" || callState === "ended" ? "☎" : "×"}
               </button>
@@ -541,21 +548,18 @@ export default function AICallPage() {
                     return next;
                   });
                 }}
-                className="flex h-16 w-16 items-center justify-center rounded-full border border-white/10 bg-white/5 text-2xl text-white/80"
+                className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-white/5 text-xl text-white/80"
               >
                 {speakerEnabled ? "🔊" : "🔇"}
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <div className="rounded-full border border-white/10 px-4 py-3 text-center text-sm text-white/50">
+            <div className="grid grid-cols-2 gap-2.5">
+              <div className="rounded-full border border-white/10 px-3 py-2.5 text-center text-xs text-white/50">
                 Ring: {ringCountdown}s
               </div>
-              <div className="rounded-full border border-white/10 px-4 py-3 text-center text-sm text-white/50">
+              <div className="rounded-full border border-white/10 px-3 py-2.5 text-center text-xs text-white/50">
                 2 Ringtones
-              </div>
-              <div className="rounded-full border border-white/10 px-4 py-3 text-center text-sm text-white/50 sm:block hidden">
-                Phone UI
               </div>
             </div>
           </div>
@@ -567,9 +571,9 @@ export default function AICallPage() {
 
 function InfoCard({ title, value }: { title: string; value: string }) {
   return (
-    <div className="rounded-[22px] border border-white/10 bg-white/[0.03] px-3 py-4 text-center">
-      <div className="text-sm text-white/40">{title}</div>
-      <div className="mt-2 text-[18px] text-white sm:text-[20px]">{value}</div>
+    <div className="rounded-[20px] border border-white/10 bg-white/[0.03] px-2.5 py-3.5 text-center">
+      <div className="text-[13px] text-white/40">{title}</div>
+      <div className="mt-2 text-[17px] text-white">{value}</div>
     </div>
   );
 }
