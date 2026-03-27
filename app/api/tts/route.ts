@@ -42,7 +42,7 @@ export async function POST(req: Request) {
       },
     });
   } catch (error: any) {
-    console.error("TTS ERROR:", error);
+    console.error("TTS ERROR FULL:", error);
     return Response.json(
       { error: error?.message || "TTS failed." },
       { status: 500 }

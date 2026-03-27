@@ -31,19 +31,19 @@ type ClientMessage =
     }
   | {
       type: "audio";
-      audio: string; // base64 PCM16 mono
+      audio: string;
     }
   | {
       type: "stop";
     };
 
 wss.on("connection", (ws: WebSocket) => {
-  let recognizeStream: any = null;
+  let recognizeStream: NodeJS.WritableStream | null = null;
 
   const cleanup = () => {
     if (recognizeStream) {
       try {
-        recognizeStream.destroy();
+        (recognizeStream as { destroy?: () => void }).destroy?.();
       } catch {}
       recognizeStream = null;
     }
@@ -67,18 +67,25 @@ wss.on("connection", (ws: WebSocket) => {
             },
             interimResults: true,
           })
-          .on("error", (err: any) => {
+          .on("error", (err: unknown) => {
             ws.send(
               JSON.stringify({
                 type: "error",
-                message: err?.message || "STT stream error",
+                message:
+                  err instanceof Error ? err.message : "STT stream error",
               })
             );
           })
-          .on("data", (data: any) => {
-            const result = data.results?.[0];
-            const transcript =
-              result?.alternatives?.[0]?.transcript || "";
+          .on("data", (data: unknown) => {
+            const payload = data as {
+              results?: Array<{
+                isFinal?: boolean;
+                alternatives?: Array<{ transcript?: string }>;
+              }>;
+            };
+
+            const result = payload.results?.[0];
+            const transcript = result?.alternatives?.[0]?.transcript || "";
             const isFinal = !!result?.isFinal;
 
             ws.send(
@@ -88,7 +95,7 @@ wss.on("connection", (ws: WebSocket) => {
                 isFinal,
               })
             );
-          });
+          }) as unknown as NodeJS.WritableStream;
 
         ws.send(JSON.stringify({ type: "started" }));
         return;
@@ -97,7 +104,7 @@ wss.on("connection", (ws: WebSocket) => {
       if (msg.type === "audio") {
         if (!recognizeStream) return;
         const buffer = Buffer.from(msg.audio, "base64");
-        recognizeStream.write(buffer);
+        (recognizeStream as NodeJS.WritableStream).write(buffer);
         return;
       }
 
@@ -105,11 +112,12 @@ wss.on("connection", (ws: WebSocket) => {
         cleanup();
         ws.send(JSON.stringify({ type: "stopped" }));
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       ws.send(
         JSON.stringify({
           type: "error",
-          message: error?.message || "Invalid WS message",
+          message:
+            error instanceof Error ? error.message : "Invalid WS message",
         })
       );
     }
@@ -119,8 +127,8 @@ wss.on("connection", (ws: WebSocket) => {
   ws.on("error", cleanup);
 });
 
-const PORT = Number(process.env.RELAY_PORT || 8081);
+const PORT = Number(process.env.PORT || 8080);
 
-server.listen(PORT, () => {
-  console.log(`Relay server listening on http://localhost:${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Relay server running on port ${PORT}`);
 });
