@@ -38,21 +38,28 @@ type ClientMessage =
     };
 
 wss.on("connection", (ws: WebSocket) => {
-  let recognizeStream: NodeJS.WritableStream | null = null;
+  let recognizeStream: any = null;
+  let isStreamActive = false;
 
   const cleanup = () => {
-    if (recognizeStream) {
-      try {
-        (recognizeStream as { destroy?: () => void }).destroy?.();
-      } catch {}
-      recognizeStream = null;
-    }
+    if (!recognizeStream) return;
+
+    try {
+      if (!recognizeStream.destroyed) {
+        recognizeStream.end?.();
+        recognizeStream.destroy?.();
+      }
+    } catch {}
+
+    recognizeStream = null;
+    isStreamActive = false;
   };
 
   ws.on("message", (raw) => {
     try {
       const msg = JSON.parse(raw.toString()) as ClientMessage;
 
+      // 🔵 START
       if (msg.type === "start") {
         cleanup();
 
@@ -67,25 +74,22 @@ wss.on("connection", (ws: WebSocket) => {
             },
             interimResults: true,
           })
-          .on("error", (err: unknown) => {
+          .on("error", (err: any) => {
+            isStreamActive = false;
+
             ws.send(
               JSON.stringify({
                 type: "error",
-                message:
-                  err instanceof Error ? err.message : "STT stream error",
+                message: err?.message || "STT stream error",
               })
             );
-          })
-          .on("data", (data: unknown) => {
-            const payload = data as {
-              results?: Array<{
-                isFinal?: boolean;
-                alternatives?: Array<{ transcript?: string }>;
-              }>;
-            };
 
-            const result = payload.results?.[0];
-            const transcript = result?.alternatives?.[0]?.transcript || "";
+            cleanup();
+          })
+          .on("data", (data: any) => {
+            const result = data.results?.[0];
+            const transcript =
+              result?.alternatives?.[0]?.transcript || "";
             const isFinal = !!result?.isFinal;
 
             ws.send(
@@ -95,36 +99,61 @@ wss.on("connection", (ws: WebSocket) => {
                 isFinal,
               })
             );
-          }) as unknown as NodeJS.WritableStream;
+          });
+
+        isStreamActive = true;
 
         ws.send(JSON.stringify({ type: "started" }));
         return;
       }
 
+      // 🔴 AUDIO
       if (msg.type === "audio") {
-        if (!recognizeStream) return;
-        const buffer = Buffer.from(msg.audio, "base64");
-        (recognizeStream as NodeJS.WritableStream).write(buffer);
+        if (!recognizeStream || !isStreamActive) return;
+
+        // 🧠 CRITICAL FIX
+        if (
+          recognizeStream.destroyed ||
+          recognizeStream.writableEnded ||
+          recognizeStream.writable === false
+        ) {
+          return;
+        }
+
+        try {
+          const buffer = Buffer.from(msg.audio, "base64");
+          recognizeStream.write(buffer);
+        } catch (err) {
+          console.error("WRITE ERROR:", err);
+          cleanup();
+        }
+
         return;
       }
 
+      // 🟡 STOP
       if (msg.type === "stop") {
         cleanup();
         ws.send(JSON.stringify({ type: "stopped" }));
+        return;
       }
-    } catch (error: unknown) {
+    } catch (error: any) {
       ws.send(
         JSON.stringify({
           type: "error",
-          message:
-            error instanceof Error ? error.message : "Invalid WS message",
+          message: error?.message || "Invalid WS message",
         })
       );
     }
   });
 
-  ws.on("close", cleanup);
-  ws.on("error", cleanup);
+  ws.on("close", () => {
+    cleanup();
+  });
+
+  ws.on("error", () => {
+    cleanup();
+  });
 });
 
 const PORT = Number(process.env.PORT || 8080);
