@@ -2,14 +2,16 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+
+
 type CallState = "idle" | "ringing" | "connected" | "ended";
 type VoiceState = "silent" | "listening" | "speaking" | "thinking";
 
 const RING_DURATION_SECONDS = 20;
 const AI_NUMBER_PREFIX = "+70 20 ";
 const REQUIRED_LOCAL_NUMBER = "7777777";
-const RELAY_WS_URL =
-  process.env.NEXT_PUBLIC_RELAY_WS_URL || "ws://localhost:8081/ws/stt";
+const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_WS_URL!;
+console.log("RELAY =", RELAY_WS_URL);
 
 export default function AICallPage() {
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -37,6 +39,11 @@ export default function AICallPage() {
     []
   );
 
+ const unlockAudio = async () => {
+  const random = ringtones[Math.floor(Math.random() * ringtones.length)];
+  const audio = new Audio(random);
+  await audio.play().catch(() => {});
+};
   useEffect(() => {
     return () => {
       stopRingtone();
