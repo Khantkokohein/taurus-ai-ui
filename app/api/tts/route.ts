@@ -26,6 +26,8 @@ export async function POST(req: Request) {
       },
       audioConfig: {
         audioEncoding: "MP3",
+        speakingRate: 1,
+        pitch: 0,
       },
     });
 
@@ -39,12 +41,15 @@ export async function POST(req: Request) {
       headers: {
         "Content-Type": "audio/mpeg",
         "Cache-Control": "no-store",
+        "Content-Length": String(audioBuffer.length),
       },
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("TTS ERROR FULL:", error);
     return Response.json(
-      { error: error?.message || "TTS failed." },
+      {
+        error: error instanceof Error ? error.message : "TTS failed.",
+      },
       { status: 500 }
     );
   }

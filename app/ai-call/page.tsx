@@ -32,13 +32,12 @@ export default function AICallPage() {
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const aiSpeakingRef = useRef(false);
   const callActiveRef = useRef(false);
+  const selectedRingtoneRef = useRef("");
 
   const ringtones = useMemo(
     () => ["/ringtone-1.mp3", "/ringtone-2.mp3"],
     []
   );
-
-  console.log("RELAY =", RELAY_WS_URL);
 
   useEffect(() => {
     return () => {
@@ -57,12 +56,16 @@ export default function AICallPage() {
     return value.replace(/\D/g, "").slice(0, 7);
   }
 
-  function getRandomRingtone() {
-    return ringtones[Math.floor(Math.random() * ringtones.length)];
+  function pickRingtone() {
+    const tone = ringtones[Math.floor(Math.random() * ringtones.length)];
+    selectedRingtoneRef.current = tone;
+    setCurrentRingtone(tone.split("/").pop() || "");
+    return tone;
   }
 
   async function unlockAudio() {
-    const audio = new Audio(getRandomRingtone());
+    const tone = selectedRingtoneRef.current || pickRingtone();
+    const audio = new Audio(tone);
     audio.volume = 0.001;
     try {
       await audio.play();
@@ -107,9 +110,7 @@ export default function AICallPage() {
       const ws = new WebSocket(RELAY_WS_URL);
       wsRef.current = ws;
 
-      const fail = (message: string) => {
-        reject(new Error(message));
-      };
+      const fail = (message: string) => reject(new Error(message));
 
       ws.onopen = () => {
         ws.send(
@@ -149,9 +150,7 @@ export default function AICallPage() {
         }
       };
 
-      ws.onerror = () => {
-        fail("WebSocket relay failed");
-      };
+      ws.onerror = () => fail("WebSocket relay failed");
 
       ws.onclose = () => {
         if (callActiveRef.current) {
@@ -179,7 +178,9 @@ export default function AICallPage() {
     const stream = await requestMic();
 
     const AudioCtx =
-      window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
 
     if (!AudioCtx) {
       throw new Error("AudioContext is not supported on this device");
@@ -261,7 +262,9 @@ export default function AICallPage() {
         body: JSON.stringify({ text }),
       });
 
-      if (!res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+
+      if (!res.ok || !contentType.includes("audio/mpeg")) {
         const err = await res.json().catch(() => null);
         throw new Error(err?.error || "TTS failed");
       }
@@ -302,11 +305,10 @@ export default function AICallPage() {
   function playRingtone() {
     if (!ringtoneRef.current) return;
 
-    const randomTone = getRandomRingtone();
-    ringtoneRef.current.src = randomTone;
+    const tone = selectedRingtoneRef.current || pickRingtone();
+    ringtoneRef.current.src = tone;
     ringtoneRef.current.loop = true;
     ringtoneRef.current.volume = 1;
-    setCurrentRingtone(randomTone.split("/").pop() || "");
 
     ringtoneRef.current.play().catch(() => {
       setErrorText("Ringtone could not play.");
@@ -356,6 +358,7 @@ export default function AICallPage() {
       return;
     }
 
+    pickRingtone();
     await unlockAudio();
 
     setErrorText("");
@@ -391,52 +394,52 @@ export default function AICallPage() {
       ? "THINKING"
       : callState === "ringing"
       ? "RINGING"
-      : "IDLE";
+      : callState === "connecting"
+      ? "JOINING"
+      : "READY";
 
   return (
     <main className="min-h-screen bg-black text-white">
       <audio ref={ringtoneRef} preload="auto" />
 
-      <div className="mx-auto flex min-h-screen max-w-md items-center justify-center px-4 py-6">
-        <div className="relative w-full overflow-hidden rounded-[42px] border border-white/10 bg-black shadow-[0_0_80px_rgba(0,180,255,0.08)]">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,123,255,0.15),transparent_45%)]" />
-          <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(255,255,255,0.04),transparent_20%,transparent_80%,rgba(255,255,255,0.03))]" />
+      <div className="mx-auto w-full max-w-[430px] px-3 pt-3 pb-[max(20px,env(safe-area-inset-bottom))]">
+        <div className="relative overflow-hidden rounded-[34px] border border-white/10 bg-black shadow-[0_0_60px_rgba(0,180,255,0.08)]">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,123,255,0.14),transparent_48%)]" />
+          <div className="relative z-10 px-4 py-4 sm:px-5 sm:py-5">
+            <div className="mx-auto mb-3 h-1.5 w-24 rounded-full bg-white/15" />
 
-          <div className="relative z-10 px-6 py-7">
-            <div className="mx-auto mb-6 h-1.5 w-24 rounded-full bg-white/15" />
-
-            <div className="mb-8 flex items-center justify-between text-sm text-white/60">
-              <div>{currentRingtone || "ringtone-random"}</div>
+            <div className="mb-4 flex items-center justify-between text-sm text-white/60">
+              <div className="truncate">{currentRingtone || "ringtone-random"}</div>
               <div>{callState === "connected" || callState === "connecting" ? "Connected" : "Standby"}</div>
             </div>
 
-            <p className="mb-6 text-center text-[13px] tracking-[0.45em] text-white/45">
+            <p className="mb-4 text-center text-[12px] tracking-[0.38em] text-white/40">
               TAURUS AI SUPPORT
             </p>
 
-            <div className="mb-10 flex justify-center">
-              <div className="relative flex h-56 w-56 items-center justify-center">
+            <div className="mb-5 flex justify-center">
+              <div className="relative flex h-32 w-32 items-center justify-center sm:h-36 sm:w-36">
                 <div className="absolute inset-0 rounded-full border border-cyan-400/10" />
+                <div className="absolute inset-2 rounded-full border border-cyan-400/10" />
                 <div className="absolute inset-4 rounded-full border border-cyan-400/10" />
-                <div className="absolute inset-8 rounded-full border border-cyan-400/10" />
-                <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_center,rgba(0,123,255,0.22),transparent_55%)]" />
-                <div className="relative flex h-36 w-36 flex-col items-center justify-center rounded-full border border-white/10 bg-white/[0.08] backdrop-blur">
-                  <div className="text-5xl font-semibold leading-none">LIVE</div>
-                  <div className="mt-3 text-sm tracking-[0.35em] text-white/45">
+                <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_center,rgba(0,123,255,0.20),transparent_58%)]" />
+                <div className="relative flex h-24 w-24 flex-col items-center justify-center rounded-full border border-white/10 bg-white/[0.08] backdrop-blur sm:h-28 sm:w-28">
+                  <div className="text-3xl font-semibold leading-none sm:text-4xl">LIVE</div>
+                  <div className="mt-2 text-[11px] tracking-[0.3em] text-white/45 sm:text-xs">
                     {liveLabel}
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="mb-2 text-center text-4xl font-semibold">
+            <div className="mb-1 text-center text-[34px] font-semibold leading-none sm:text-[42px]">
               {AI_NUMBER_PREFIX}
               {phoneNumber || "•••••••"}
             </div>
 
-            <div className="mb-8 text-center text-white/60">{statusText}</div>
+            <div className="mb-5 text-center text-white/60">{statusText}</div>
 
-            <p className="mb-3 text-[13px] tracking-[0.4em] text-white/35">
+            <p className="mb-2 text-[12px] tracking-[0.35em] text-white/35">
               DIAL TAURUS NUMBER
             </p>
 
@@ -445,10 +448,10 @@ export default function AICallPage() {
               onChange={(e) => setPhoneNumber(formatPhoneNumber(e.target.value))}
               inputMode="numeric"
               placeholder="7777777"
-              className="mb-6 w-full rounded-[24px] border border-white/10 bg-black px-5 py-5 text-center text-4xl tracking-[0.25em] text-white outline-none"
+              className="mb-4 w-full rounded-[22px] border border-white/10 bg-black px-4 py-4 text-center text-[38px] tracking-[0.18em] text-white outline-none sm:text-[46px]"
             />
 
-            <div className="mb-6 grid grid-cols-3 gap-4">
+            <div className="mb-4 grid grid-cols-3 gap-3">
               <InfoCard title="Mode" value="Voice Call" />
               <InfoCard
                 title="Mic"
@@ -476,27 +479,31 @@ export default function AICallPage() {
               />
             </div>
 
-            <div className="mb-4 rounded-[24px] border border-white/10 bg-black/80 p-5">
-              <p className="text-[13px] tracking-[0.35em] text-white/35">YOU SAID</p>
-              <p className="mt-3 min-h-[34px] text-[18px] text-white/90">
-                {heardText || "Waiting for your voice..."}
-              </p>
+            <div className="mb-3 rounded-[22px] border border-white/10 bg-black/80 p-4">
+              <p className="text-[12px] tracking-[0.33em] text-white/35">YOU SAID</p>
+              <div className="mt-3 h-[72px] overflow-y-auto">
+                <p className="text-[17px] leading-7 text-white/90">
+                  {heardText || "Waiting for your voice..."}
+                </p>
+              </div>
             </div>
 
-            <div className="mb-8 rounded-[24px] border border-white/10 bg-black/80 p-5">
-              <p className="text-[13px] tracking-[0.35em] text-white/35">TAURUS AI REPLY</p>
-              <p className="mt-3 min-h-[34px] text-[18px] text-white/90">
-                {replyText || "AI reply will appear here..."}
-              </p>
+            <div className="mb-4 rounded-[22px] border border-white/10 bg-black/80 p-4">
+              <p className="text-[12px] tracking-[0.33em] text-white/35">TAURUS AI REPLY</p>
+              <div className="mt-3 h-[72px] overflow-y-auto">
+                <p className="text-[17px] leading-7 text-white/90">
+                  {replyText || "AI reply will appear here..."}
+                </p>
+              </div>
             </div>
 
             {errorText ? (
-              <div className="mb-5 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
+              <div className="mb-4 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
                 {errorText}
               </div>
             ) : null}
 
-            <div className="flex items-center justify-between">
+            <div className="mb-4 flex items-center justify-between">
               <button
                 type="button"
                 onClick={() => {
@@ -508,15 +515,17 @@ export default function AICallPage() {
                   setVoiceState("silent");
                   setStatusText("Enter 7777777 to start.");
                 }}
-                className="flex h-20 w-20 items-center justify-center rounded-full border border-white/10 bg-white/5 text-3xl text-white/80"
+                className="flex h-16 w-16 items-center justify-center rounded-full border border-white/10 bg-white/5 text-2xl text-white/80"
               >
                 ↺
               </button>
 
               <button
                 type="button"
-                onClick={() => void (callState === "idle" || callState === "ended" ? startCall() : endCall())}
-                className="flex h-28 w-28 items-center justify-center rounded-full bg-[#ff2d55] text-5xl text-white shadow-[0_0_55px_rgba(255,45,85,0.35)]"
+                onClick={() =>
+                  void (callState === "idle" || callState === "ended" ? startCall() : endCall())
+                }
+                className="flex h-20 w-20 items-center justify-center rounded-full bg-[#ff2d55] text-4xl text-white shadow-[0_0_45px_rgba(255,45,85,0.35)]"
               >
                 {callState === "idle" || callState === "ended" ? "☎" : "×"}
               </button>
@@ -524,25 +533,28 @@ export default function AICallPage() {
               <button
                 type="button"
                 onClick={() => {
-                  setSpeakerEnabled((prev) => !prev);
-                  if (remoteAudioRef.current) {
-                    remoteAudioRef.current.volume = !speakerEnabled ? 1 : 0;
-                  }
+                  setSpeakerEnabled((prev) => {
+                    const next = !prev;
+                    if (remoteAudioRef.current) {
+                      remoteAudioRef.current.volume = next ? 1 : 0;
+                    }
+                    return next;
+                  });
                 }}
-                className="flex h-20 w-20 items-center justify-center rounded-full border border-white/10 bg-white/5 text-3xl text-white/80"
+                className="flex h-16 w-16 items-center justify-center rounded-full border border-white/10 bg-white/5 text-2xl text-white/80"
               >
                 {speakerEnabled ? "🔊" : "🔇"}
               </button>
             </div>
 
-            <div className="mt-8 grid grid-cols-3 gap-3 text-center text-sm text-white/50">
-              <div className="rounded-full border border-white/10 px-4 py-3">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <div className="rounded-full border border-white/10 px-4 py-3 text-center text-sm text-white/50">
                 Ring: {ringCountdown}s
               </div>
-              <div className="rounded-full border border-white/10 px-4 py-3">
+              <div className="rounded-full border border-white/10 px-4 py-3 text-center text-sm text-white/50">
                 2 Ringtones
               </div>
-              <div className="rounded-full border border-white/10 px-4 py-3">
+              <div className="rounded-full border border-white/10 px-4 py-3 text-center text-sm text-white/50 sm:block hidden">
                 Phone UI
               </div>
             </div>
@@ -555,9 +567,9 @@ export default function AICallPage() {
 
 function InfoCard({ title, value }: { title: string; value: string }) {
   return (
-    <div className="rounded-[24px] border border-white/10 bg-white/[0.03] px-4 py-5 text-center">
+    <div className="rounded-[22px] border border-white/10 bg-white/[0.03] px-3 py-4 text-center">
       <div className="text-sm text-white/40">{title}</div>
-      <div className="mt-2 text-xl text-white">{value}</div>
+      <div className="mt-2 text-[18px] text-white sm:text-[20px]">{value}</div>
     </div>
   );
 }
