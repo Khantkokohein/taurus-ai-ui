@@ -1,672 +1,46 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
-type CallState = "idle" | "ringing" | "connecting" | "connected" | "ended";
-type VoiceState = "silent" | "listening" | "thinking" | "speaking";
+type ChatRole = "user" | "assistant";
+type ChatMessage = {
+  id: string;
+  role: ChatRole;
+  text: string;
+};
 
-const AI_NUMBER_PREFIX = "+70 20 ";
-const RING_DURATION_SECONDS = 20;
-const REQUIRED_LOCAL_NUMBER = "7777777";
+type CallState = "idle" | "connecting" | "connected" | "ended";
+
+type LiveIncomingMessage = {
+  setupComplete?: boolean;
+  error?: { message?: string };
+  serverContent?: {
+    modelTurn?: {
+      parts?: Array<{
+        text?: string;
+        inlineData?: {
+          mimeType?: string;
+          data?: string;
+        };
+      }>;
+    };
+    turnComplete?: boolean;
+  };
+};
+
 const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_WS_URL!;
+const DEMO_COOKIE = "taurus_demo_session";
 
-function getRelayHttpUrl(wsUrl: string) {
-  if (wsUrl.startsWith("wss://")) {
-    return wsUrl.replace("wss://", "https://").replace(/\/ws\/stt$/, "");
-  }
-  if (wsUrl.startsWith("ws://")) {
-    return wsUrl.replace("ws://", "http://").replace(/\/ws\/stt$/, "");
-  }
-  return wsUrl.replace(/\/ws\/stt$/, "");
+function uid() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-const RELAY_HTTP_URL = getRelayHttpUrl(RELAY_WS_URL);
-
-export default function AICallPage() {
-  const [phoneNumber, setPhoneNumber] = useState(REQUIRED_LOCAL_NUMBER);
-  const [callState, setCallState] = useState<CallState>("idle");
-  const [voiceState, setVoiceState] = useState<VoiceState>("silent");
-  const [ringCountdown, setRingCountdown] = useState(RING_DURATION_SECONDS);
-  const [statusText, setStatusText] = useState("Enter 7777777 to start.");
-  const [heardText, setHeardText] = useState("");
-  const [replyText, setReplyText] = useState("");
-  const [errorText, setErrorText] = useState("");
-  const [currentRingtone, setCurrentRingtone] = useState("");
-  const [speakerEnabled, setSpeakerEnabled] = useState(true);
-
-  const ringtoneRef = useRef<HTMLAudioElement | null>(null);
-  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-  const ringTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const aiSpeakingRef = useRef(false);
-  const callActiveRef = useRef(false);
-  const selectedRingtoneRef = useRef<string>("");
-  const replyAudioUrlRef = useRef<string | null>(null);
-
-  const ringtones = useMemo(() => ["/ringtone-1.mp3", "/ringtone-2.mp3"], []);
-
-  useEffect(() => {
-    return () => {
-      cleanupAll();
-    };
-  }, []);
-
-  function cleanupAll() {
-    stopRingtone();
-    stopRelay();
-    stopMic();
-
-    if (ringTimerRef.current) {
-      clearInterval(ringTimerRef.current);
-      ringTimerRef.current = null;
-    }
-
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.pause();
-      remoteAudioRef.current.src = "";
-    }
-
-    if (replyAudioUrlRef.current) {
-      URL.revokeObjectURL(replyAudioUrlRef.current);
-      replyAudioUrlRef.current = null;
-    }
-  }
-
-  function formatPhoneNumber(value: string) {
-    return value.replace(/\D/g, "").slice(0, 7);
-  }
-
-  function pickRingtone() {
-    const tone = ringtones[Math.floor(Math.random() * ringtones.length)];
-    selectedRingtoneRef.current = tone;
-    setCurrentRingtone(tone.split("/").pop() || "");
-    return tone;
-  }
-
-  async function unlockAudio() {
-    const silentWav =
-      "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
-
-    try {
-      const audio = new Audio(silentWav);
-      audio.volume = 0;
-      await audio.play();
-      audio.pause();
-    } catch {}
-  }
-
-  async function requestMic() {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    });
-
-    streamRef.current = stream;
-    return stream;
-  }
-
-  function stopMic() {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-
-    try {
-      processorRef.current?.disconnect();
-    } catch {}
-
-    try {
-      sourceRef.current?.disconnect();
-    } catch {}
-
-    processorRef.current = null;
-    sourceRef.current = null;
-
-    if (audioContextRef.current) {
-      audioContextRef.current.close().catch(() => {});
-      audioContextRef.current = null;
-    }
-  }
-
-  function stopRelay() {
-    if (!wsRef.current) return;
-
-    try {
-      if (wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: "stop" }));
-      }
-    } catch {}
-
-    try {
-      wsRef.current.close();
-    } catch {}
-
-    wsRef.current = null;
-  }
-
-  function playRingtone() {
-    const audio = ringtoneRef.current;
-    if (!audio) return;
-
-    const tone = selectedRingtoneRef.current || pickRingtone();
-
-    audio.pause();
-    audio.currentTime = 0;
-    audio.src = tone;
-    audio.loop = true;
-    audio.volume = speakerEnabled ? 1 : 0.8;
-
-    audio.play().catch(() => {
-      setErrorText("Ringtone could not play.");
-    });
-  }
-
-  function stopRingtone() {
-    const audio = ringtoneRef.current;
-    if (!audio) return;
-
-    audio.pause();
-    audio.currentTime = 0;
-  }
-
-  function beginRingCountdown() {
-    if (ringTimerRef.current) {
-      clearInterval(ringTimerRef.current);
-    }
-
-    ringTimerRef.current = setInterval(() => {
-      setRingCountdown((prev) => {
-        if (prev <= 1) {
-          if (ringTimerRef.current) {
-            clearInterval(ringTimerRef.current);
-            ringTimerRef.current = null;
-          }
-          void connectCall();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }
-
-  function startRelay(languageCode = "en-US") {
-    return new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(RELAY_WS_URL);
-      wsRef.current = ws;
-
-      const fail = (message: string) => {
-        reject(new Error(message));
-      };
-
-      ws.onopen = () => {
-        ws.send(
-          JSON.stringify({
-            type: "start",
-            languageCode,
-            sampleRateHertz: 16000,
-          })
-        );
-      };
-
-      ws.onmessage = async (event) => {
-        const msg = JSON.parse(event.data);
-
-        if (msg.type === "started") {
-          setVoiceState("listening");
-          setStatusText("Listening...");
-          resolve();
-          return;
-        }
-
-        if (msg.type === "transcript") {
-          const transcript = msg.transcript || "";
-          setHeardText(transcript);
-
-          if (msg.isFinal && transcript && !aiSpeakingRef.current) {
-            setVoiceState("thinking");
-            setStatusText(`You: ${transcript}`);
-            await askAI(transcript);
-          }
-          return;
-        }
-
-        if (msg.type === "error") {
-          const message = msg.message || "Relay error";
-          setErrorText(message);
-          stopRelay();
-          stopMic();
-          fail(message);
-          return;
-        }
-      };
-
-      ws.onerror = () => {
-        fail("WebSocket relay failed.");
-      };
-
-      ws.onclose = () => {
-        if (callActiveRef.current && callState !== "ended") {
-          setStatusText("Relay disconnected.");
-        }
-      };
-    });
-  }
-
-  async function startMicStreaming(stream: MediaStream) {
-    const AudioCtx =
-      window.AudioContext ||
-      (window as typeof window & { webkitAudioContext?: typeof AudioContext })
-        .webkitAudioContext;
-
-    if (!AudioCtx) {
-      throw new Error("AudioContext is not supported on this device.");
-    }
-
-    const audioContext = new AudioCtx({ sampleRate: 16000 });
-    audioContextRef.current = audioContext;
-
-    if (audioContext.state === "suspended") {
-      await audioContext.resume();
-    }
-
-    const source = audioContext.createMediaStreamSource(stream);
-    sourceRef.current = source;
-
-    const processor = audioContext.createScriptProcessor(4096, 1, 1);
-    processorRef.current = processor;
-
-    const silentGain = audioContext.createGain();
-    silentGain.gain.value = 0;
-
-    source.connect(processor);
-    processor.connect(silentGain);
-    silentGain.connect(audioContext.destination);
-
-    processor.onaudioprocess = (event) => {
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-      if (aiSpeakingRef.current) return;
-
-      const input = event.inputBuffer.getChannelData(0);
-      const pcm16 = float32To16BitPCM(input);
-      const base64 = arrayBufferToBase64(pcm16.buffer);
-
-      try {
-        wsRef.current.send(
-          JSON.stringify({
-            type: "audio",
-            audio: base64,
-          })
-        );
-      } catch {}
-    };
-  }
-
-  async function askAI(prompt: string) {
-    try {
-      const res = await fetch("/api/ai-call", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ prompt }),
-      });
-
-      const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        throw new Error(data?.error || "AI request failed.");
-      }
-
-      const text =
-        typeof data?.text === "string" && data.text.trim()
-          ? data.text.trim()
-          : "I am here and listening.";
-
-      setReplyText(text);
-      await speakReply(text);
-    } catch (error) {
-      console.error(error);
-      setErrorText(
-        error instanceof Error ? error.message : "AI request failed."
-      );
-      setVoiceState("listening");
-      setStatusText("Listening...");
-    }
-  }
-
-  async function speakReply(text: string) {
-    try {
-      aiSpeakingRef.current = true;
-      setVoiceState("speaking");
-      setStatusText("Taurus AI is speaking...");
-
-      const res = await fetch(`${RELAY_HTTP_URL}/tts`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ text }),
-      });
-
-      const contentType = res.headers.get("content-type") || "";
-
-      if (!res.ok || !contentType.includes("audio/mpeg")) {
-        const err = await res.json().catch(() => null);
-        throw new Error(err?.error || "TTS failed.");
-      }
-
-      const blob = await res.blob();
-
-      if (replyAudioUrlRef.current) {
-        URL.revokeObjectURL(replyAudioUrlRef.current);
-      }
-
-      const url = URL.createObjectURL(blob);
-      replyAudioUrlRef.current = url;
-
-      if (!remoteAudioRef.current) {
-        remoteAudioRef.current = new Audio();
-      }
-
-      const audio = remoteAudioRef.current;
-      audio.pause();
-      audio.src = url;
-      audio.preload = "auto";
-      audio.volume = speakerEnabled ? 1 : 0;
-
-      await audio.play();
-
-      await new Promise<void>((resolve) => {
-        audio.onended = () => resolve();
-        audio.onerror = () => resolve();
-      });
-    } catch (error) {
-      console.error(error);
-      setErrorText(
-        error instanceof Error ? error.message : "Speech playback failed."
-      );
-    } finally {
-      aiSpeakingRef.current = false;
-
-      if (callActiveRef.current) {
-        setVoiceState("listening");
-        setStatusText("Listening...");
-      }
-    }
-  }
-
-  async function connectCall() {
-    try {
-      stopRingtone();
-      setCallState("connecting");
-      setStatusText("Requesting microphone...");
-
-      const micStream = await requestMic();
-
-      setStatusText("Connecting relay...");
-      await startRelay("en-US");
-      await startMicStreaming(micStream);
-
-      setCallState("connected");
-      setVoiceState("listening");
-      setStatusText("Listening...");
-
-      setReplyText("Hello, I am Taurus AI. How can I help you today?");
-      void speakReply("Hello, I am Taurus AI. How can I help you today?");
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Call connection failed.";
-
-      console.error(error);
-      setErrorText(message);
-      endCall();
-    }
-  }
-
-  async function startCall() {
-    if (phoneNumber !== REQUIRED_LOCAL_NUMBER) {
-      setErrorText("Only 7777777 is allowed.");
-      return;
-    }
-
-    setErrorText("");
-    setHeardText("");
-    setReplyText("");
-    setRingCountdown(RING_DURATION_SECONDS);
-    setCallState("ringing");
-    setVoiceState("silent");
-    setStatusText(`Calling ${AI_NUMBER_PREFIX}${phoneNumber}...`);
-    callActiveRef.current = true;
-
-    pickRingtone();
-    await unlockAudio();
-    playRingtone();
-    beginRingCountdown();
-  }
-
-  function endCall() {
-    callActiveRef.current = false;
-    setCallState("ended");
-    setVoiceState("silent");
-    setStatusText("Call ended.");
-
-    if (ringTimerRef.current) {
-      clearInterval(ringTimerRef.current);
-      ringTimerRef.current = null;
-    }
-
-    cleanupAll();
-  }
-
-  const isIdle = callState === "idle" || callState === "ended";
-
-  const liveLabel =
-    voiceState === "speaking"
-      ? "SPEAKING"
-      : voiceState === "listening"
-      ? "LISTENING"
-      : voiceState === "thinking"
-      ? "THINKING"
-      : callState === "ringing"
-      ? "RINGING"
-      : callState === "connecting"
-      ? "JOINING"
-      : "READY";
-
-  return (
-    <main className="min-h-screen bg-black text-white">
-      <audio ref={ringtoneRef} preload="auto" />
-
-      <div className="mx-auto w-full max-w-[390px] px-2.5 pt-2.5 pb-[max(16px,env(safe-area-inset-bottom))]">
-        <div className="relative overflow-hidden rounded-[30px] border border-white/10 bg-black shadow-[0_0_50px_rgba(0,180,255,0.08)]">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,123,255,0.12),transparent_48%)]" />
-
-          <div className="relative z-10 px-4 py-4">
-            <div className="mx-auto mb-3 h-1.5 w-20 rounded-full bg-white/15" />
-
-            <div className="mb-3 flex items-center justify-between text-[13px] text-white/60">
-              <div className="truncate">{currentRingtone || "ringtone-random"}</div>
-              <div>{isIdle ? "Ready" : "Connected"}</div>
-            </div>
-
-            <p className="mb-3 text-center text-[11px] tracking-[0.32em] text-white/40">
-              TAURUS AI SUPPORT
-            </p>
-
-            <div className="mb-4 flex justify-center">
-              <div className="relative flex h-28 w-28 items-center justify-center">
-                <div className="absolute inset-0 rounded-full border border-cyan-400/10" />
-                <div className="absolute inset-2 rounded-full border border-cyan-400/10" />
-                <div className="absolute inset-4 rounded-full border border-cyan-400/10" />
-                <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_center,rgba(0,123,255,0.20),transparent_58%)]" />
-                <div className="relative flex h-20 w-20 flex-col items-center justify-center rounded-full border border-white/10 bg-white/[0.08] backdrop-blur">
-                  <div className="text-[34px] font-semibold leading-none">LIVE</div>
-                  <div className="mt-1.5 text-[10px] tracking-[0.28em] text-white/45">
-                    {liveLabel}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="mb-1 text-center text-[30px] font-semibold leading-none">
-              {AI_NUMBER_PREFIX}
-              {phoneNumber || "•••••••"}
-            </div>
-
-            <div className="mb-4 text-center text-sm text-white/60">
-              {statusText}
-            </div>
-
-            <p className="mb-2 text-[11px] tracking-[0.32em] text-white/35">
-              DIAL TAURUS NUMBER
-            </p>
-
-            <input
-              value={phoneNumber}
-              onChange={(e) => setPhoneNumber(formatPhoneNumber(e.target.value))}
-              inputMode="numeric"
-              placeholder="7777777"
-              className="mb-3 w-full rounded-[20px] border border-white/10 bg-black px-4 py-3.5 text-center text-[34px] tracking-[0.15em] text-white outline-none"
-            />
-
-            <div className="mb-3 grid grid-cols-3 gap-2.5">
-              <InfoCard title="Mode" value="Voice Call" />
-              <InfoCard
-                title="Mic"
-                value={
-                  voiceState === "listening"
-                    ? "Listening"
-                    : voiceState === "thinking"
-                    ? "Thinking"
-                    : voiceState === "speaking"
-                    ? "Standby"
-                    : "Standby"
-                }
-              />
-              <InfoCard
-                title="Call"
-                value={
-                  callState === "connected"
-                    ? "Live"
-                    : callState === "connecting"
-                    ? "Join"
-                    : callState === "ringing"
-                    ? "Ringing"
-                    : "Ready"
-                }
-              />
-            </div>
-
-            <div className="mb-3 rounded-[20px] border border-white/10 bg-black/80 p-3.5">
-              <p className="text-[11px] tracking-[0.3em] text-white/35">YOU SAID</p>
-              <div className="mt-2.5 h-[64px] overflow-y-auto">
-                <p className="text-[16px] leading-7 text-white/90">
-                  {heardText || "Waiting for your voice..."}
-                </p>
-              </div>
-            </div>
-
-            <div className="mb-3 rounded-[20px] border border-white/10 bg-black/80 p-3.5">
-              <p className="text-[11px] tracking-[0.3em] text-white/35">
-                TAURUS AI REPLY
-              </p>
-              <div className="mt-2.5 h-[64px] overflow-y-auto">
-                <p className="text-[16px] leading-7 text-white/90">
-                  {replyText || "AI reply will appear here..."}
-                </p>
-              </div>
-            </div>
-
-            {errorText ? (
-              <div className="mb-3 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">
-                {errorText}
-              </div>
-            ) : null}
-
-            <div className="mb-3 flex items-center justify-between">
-              <button
-                type="button"
-                onClick={() => {
-                  setPhoneNumber(REQUIRED_LOCAL_NUMBER);
-                  setErrorText("");
-                  setReplyText("");
-                  setHeardText("");
-                  setCallState("idle");
-                  setVoiceState("silent");
-                  setStatusText("Enter 7777777 to start.");
-                  cleanupAll();
-                }}
-                className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-white/5 text-xl text-white/80"
-              >
-                ↺
-              </button>
-
-              <button
-                type="button"
-                onClick={() => void (isIdle ? startCall() : endCall())}
-                className={`flex h-[72px] w-[72px] items-center justify-center rounded-full text-[34px] text-white ${
-                  isIdle
-                    ? "bg-emerald-500 shadow-[0_0_38px_rgba(16,185,129,0.35)]"
-                    : "bg-[#ff2d55] shadow-[0_0_38px_rgba(255,45,85,0.35)]"
-                }`}
-              >
-                {isIdle ? "☎" : "×"}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setSpeakerEnabled((prev) => {
-                    const next = !prev;
-
-                    if (ringtoneRef.current) {
-                      ringtoneRef.current.volume = next ? 1 : 0;
-                    }
-
-                    if (remoteAudioRef.current) {
-                      remoteAudioRef.current.volume = next ? 1 : 0;
-                    }
-
-                    return next;
-                  });
-                }}
-                className="flex h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-white/5 text-xl text-white/80"
-              >
-                {speakerEnabled ? "🔊" : "🔇"}
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2.5">
-              <div className="rounded-full border border-white/10 px-3 py-2.5 text-center text-xs text-white/50">
-                Ring: {ringCountdown}s
-              </div>
-              <div className="rounded-full border border-white/10 px-3 py-2.5 text-center text-xs text-white/50">
-                2 Ringtones
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </main>
-  );
-}
-
-function InfoCard({ title, value }: { title: string; value: string }) {
-  return (
-    <div className="rounded-[20px] border border-white/10 bg-white/[0.03] px-2.5 py-3.5 text-center">
-      <div className="text-[13px] text-white/40">{title}</div>
-      <div className="mt-2 text-[17px] text-white">{value}</div>
-    </div>
-  );
+function base64ToUint8Array(base64: string) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 function float32To16BitPCM(float32Array: Float32Array) {
@@ -685,10 +59,776 @@ function float32To16BitPCM(float32Array: Float32Array) {
 function arrayBufferToBase64(buffer: ArrayBuffer) {
   let binary = "";
   const bytes = new Uint8Array(buffer);
-
   for (let i = 0; i < bytes.byteLength; i++) {
     binary += String.fromCharCode(bytes[i]);
   }
-
   return btoa(binary);
+}
+
+export default function AICallPage() {
+  const router = useRouter();
+
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { id: uid(), role: "assistant", text: "Taurus ready." },
+  ]);
+  const [input, setInput] = useState("");
+  const [callState, setCallState] = useState<CallState>("idle");
+  const [dialOpen, setDialOpen] = useState(false);
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [isMuted, setIsMuted] = useState(false);
+  const [speakerOn, setSpeakerOn] = useState(true);
+  const [statusText, setStatusText] = useState("Workspace ready");
+  const [errorText, setErrorText] = useState("");
+
+  const liveWsRef = useRef<WebSocket | null>(null);
+  const sttWsRef = useRef<WebSocket | null>(null);
+
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
+  const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const inputProcessorRef = useRef<ScriptProcessorNode | null>(null);
+
+  const outputAudioContextRef = useRef<AudioContext | null>(null);
+  const nextPlayTimeRef = useRef(0);
+
+  const activeAssistantMessageIdRef = useRef<string | null>(null);
+  const isLiveReadyRef = useRef(false);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+
+  const callConnected = useMemo(() => callState === "connected", [callState]);
+
+  useEffect(() => {
+    scrollerRef.current?.scrollTo({
+      top: scrollerRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [messages]);
+
+  useEffect(() => {
+    return () => {
+      cleanupAll();
+    };
+  }, []);
+
+  function cleanupAll() {
+    stopCall();
+    closeLiveSocket();
+
+    if (outputAudioContextRef.current) {
+      outputAudioContextRef.current.close().catch(() => {});
+      outputAudioContextRef.current = null;
+    }
+  }
+
+  function addMessage(role: ChatRole, text: string) {
+    const id = uid();
+    setMessages((prev) => [...prev, { id, role, text }]);
+    return id;
+  }
+
+  function updateMessage(id: string, nextText: string) {
+    setMessages((prev) =>
+      prev.map((msg) => (msg.id === id ? { ...msg, text: nextText } : msg))
+    );
+  }
+
+  async function ensureOutputContext() {
+    if (!outputAudioContextRef.current) {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as typeof window & {
+          webkitAudioContext?: typeof AudioContext;
+        }).webkitAudioContext;
+
+      if (!AudioCtx) {
+        throw new Error("Audio output is not supported.");
+      }
+
+      outputAudioContextRef.current = new AudioCtx({ sampleRate: 24000 });
+      nextPlayTimeRef.current = outputAudioContextRef.current.currentTime;
+    }
+
+    if (outputAudioContextRef.current.state === "suspended") {
+      await outputAudioContextRef.current.resume();
+    }
+
+    return outputAudioContextRef.current;
+  }
+
+  async function ensureLiveSocket() {
+    if (
+      liveWsRef.current &&
+      liveWsRef.current.readyState === WebSocket.OPEN &&
+      isLiveReadyRef.current
+    ) {
+      return;
+    }
+
+    setStatusText("Connecting Taurus...");
+    setErrorText("");
+
+    const tokenRes = await fetch("/api/live-token", { method: "POST" });
+    const tokenJson = await tokenRes.json().catch(() => null);
+
+    if (!tokenRes.ok) {
+      throw new Error(tokenJson?.error || "Failed to create live token.");
+    }
+
+    const token = tokenJson?.token;
+    if (!token || typeof token !== "string") {
+      throw new Error("Missing Gemini Live token.");
+    }
+
+    await ensureOutputContext();
+
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(
+        `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=${encodeURIComponent(
+          token
+        )}`
+      );
+
+      liveWsRef.current = ws;
+      isLiveReadyRef.current = false;
+
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            setup: {
+              model: "models/gemini-3.1-flash-live-preview",
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+              },
+              systemInstruction: {
+                parts: [
+                  {
+                    text:
+                      "You are Taurus, a premium AI assistant. " +
+                      "Reply naturally, clearly, and briefly. " +
+                      "If the user speaks Burmese, answer in Burmese. " +
+                      "If the user speaks English, answer in English. " +
+                      "For mixed language, reply in the dominant language.",
+                  },
+                ],
+              },
+            },
+          })
+        );
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(event.data) as LiveIncomingMessage;
+
+          if (msg.setupComplete) {
+            isLiveReadyRef.current = true;
+            setStatusText(callConnected ? "Call live" : "Chat ready");
+            resolve();
+            return;
+          }
+
+          if (msg.error?.message) {
+            reject(new Error(msg.error.message));
+            return;
+          }
+
+          const parts = msg.serverContent?.modelTurn?.parts || [];
+
+          for (const part of parts) {
+            if (part.text?.trim()) {
+              if (!activeAssistantMessageIdRef.current) {
+                activeAssistantMessageIdRef.current = addMessage("assistant", "");
+              }
+
+              const currentId = activeAssistantMessageIdRef.current;
+              const currentMessage = messages.find((m) => m.id === currentId)?.text || "";
+              updateMessage(currentId, `${currentMessage}${part.text}`);
+            }
+
+            if (
+              speakerOn &&
+              part.inlineData?.mimeType?.startsWith("audio/pcm") &&
+              part.inlineData.data
+            ) {
+              await schedulePcmPlayback(part.inlineData.data);
+            }
+          }
+
+          if (msg.serverContent?.turnComplete) {
+            activeAssistantMessageIdRef.current = null;
+          }
+        } catch (error) {
+          console.error("LIVE SOCKET MESSAGE ERROR:", error);
+        }
+      };
+
+      ws.onerror = () => {
+        reject(new Error("Gemini Live socket failed."));
+      };
+
+      ws.onclose = () => {
+        isLiveReadyRef.current = false;
+        if (callState === "connected") {
+          setStatusText("Call disconnected");
+        }
+      };
+    });
+  }
+
+  async function schedulePcmPlayback(base64Pcm: string) {
+    const ctx = await ensureOutputContext();
+
+    const pcmBytes = base64ToUint8Array(base64Pcm);
+    const int16 = new Int16Array(
+      pcmBytes.buffer,
+      pcmBytes.byteOffset,
+      pcmBytes.byteLength / 2
+    );
+
+    const audioBuffer = ctx.createBuffer(1, int16.length, 24000);
+    const channel = audioBuffer.getChannelData(0);
+
+    for (let i = 0; i < int16.length; i++) {
+      channel[i] = int16[i] / 32768;
+    }
+
+    const source = ctx.createBufferSource();
+    const gain = ctx.createGain();
+    gain.gain.value = speakerOn ? 1 : 0;
+
+    source.buffer = audioBuffer;
+    source.connect(gain);
+    gain.connect(ctx.destination);
+
+    const startAt = Math.max(ctx.currentTime, nextPlayTimeRef.current);
+    source.start(startAt);
+    nextPlayTimeRef.current = startAt + audioBuffer.duration;
+  }
+
+  async function sendTextToLive(text: string) {
+    await ensureLiveSocket();
+
+    if (!liveWsRef.current || liveWsRef.current.readyState !== WebSocket.OPEN) {
+      throw new Error("Gemini Live is not connected.");
+    }
+
+    const assistantId = addMessage("assistant", "");
+    activeAssistantMessageIdRef.current = assistantId;
+
+    liveWsRef.current.send(
+      JSON.stringify({
+        clientContent: {
+          turns: [
+            {
+              role: "user",
+              parts: [{ text }],
+            },
+          ],
+          turnComplete: true,
+        },
+      })
+    );
+  }
+
+  async function handleSendMessage() {
+    const text = input.trim();
+    if (!text) return;
+
+    setInput("");
+    setErrorText("");
+    addMessage("user", text);
+
+    try {
+      await sendTextToLive(text);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Send failed.");
+    }
+  }
+
+  async function startCall() {
+    if (!phoneNumber.trim()) {
+      setErrorText("Enter a phone number.");
+      return;
+    }
+
+    setDialOpen(false);
+    setErrorText("");
+    setCallState("connecting");
+    setStatusText("Connecting call...");
+
+    try {
+      await ensureLiveSocket();
+      await startSttRelay();
+      await startMic();
+
+      setCallState("connected");
+      setStatusText("Call live");
+      addMessage("assistant", `Calling ${phoneNumber}...`);
+      await sendTextToLive("Please greet the caller briefly and warmly.");
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Call start failed.");
+      stopCall();
+    }
+  }
+
+  async function startSttRelay() {
+    if (sttWsRef.current && sttWsRef.current.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(RELAY_WS_URL);
+      sttWsRef.current = ws;
+
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            type: "start",
+            languageCode: "en-US",
+            sampleRateHertz: 16000,
+          })
+        );
+      };
+
+      ws.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === "started") {
+          resolve();
+          return;
+        }
+
+        if (msg.type === "transcript") {
+          const transcript = (msg.transcript || "").trim();
+
+          if (msg.isFinal && transcript) {
+            addMessage("user", transcript);
+
+            try {
+              await sendTextToLive(transcript);
+            } catch (error) {
+              setErrorText(error instanceof Error ? error.message : "Live send failed.");
+            }
+          }
+          return;
+        }
+
+        if (msg.type === "error") {
+          reject(new Error(msg.message || "STT relay error"));
+        }
+      };
+
+      ws.onerror = () => reject(new Error("STT socket failed."));
+      ws.onclose = () => {
+        if (callState === "connected") {
+          setStatusText("Call disconnected");
+        }
+      };
+    });
+  }
+
+  async function startMic() {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false,
+    });
+
+    mediaStreamRef.current = stream;
+
+    const AudioCtx =
+      window.AudioContext ||
+      (window as typeof window & {
+        webkitAudioContext?: typeof AudioContext;
+      }).webkitAudioContext;
+
+    if (!AudioCtx) {
+      throw new Error("Microphone audio context is not supported.");
+    }
+
+    const ctx = new AudioCtx({ sampleRate: 16000 });
+    inputAudioContextRef.current = ctx;
+
+    if (ctx.state === "suspended") {
+      await ctx.resume();
+    }
+
+    const source = ctx.createMediaStreamSource(stream);
+    inputSourceRef.current = source;
+
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    inputProcessorRef.current = processor;
+
+    const silentGain = ctx.createGain();
+    silentGain.gain.value = 0;
+
+    source.connect(processor);
+    processor.connect(silentGain);
+    silentGain.connect(ctx.destination);
+
+    processor.onaudioprocess = (event) => {
+      if (isMuted) return;
+      if (!sttWsRef.current || sttWsRef.current.readyState !== WebSocket.OPEN) return;
+
+      const input = event.inputBuffer.getChannelData(0);
+      const pcm16 = float32To16BitPCM(input);
+      const base64 = arrayBufferToBase64(pcm16.buffer);
+
+      try {
+        sttWsRef.current.send(
+          JSON.stringify({
+            type: "audio",
+            audio: base64,
+          })
+        );
+      } catch {}
+    };
+  }
+
+  function stopCall() {
+    setCallState("ended");
+    setStatusText("Call ended");
+
+    if (sttWsRef.current) {
+      try {
+        if (sttWsRef.current.readyState === WebSocket.OPEN) {
+          sttWsRef.current.send(JSON.stringify({ type: "stop" }));
+        }
+      } catch {}
+
+      try {
+        sttWsRef.current.close();
+      } catch {}
+
+      sttWsRef.current = null;
+    }
+
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+
+    try {
+      inputProcessorRef.current?.disconnect();
+      inputSourceRef.current?.disconnect();
+    } catch {}
+
+    inputProcessorRef.current = null;
+    inputSourceRef.current = null;
+
+    if (inputAudioContextRef.current) {
+      inputAudioContextRef.current.close().catch(() => {});
+      inputAudioContextRef.current = null;
+    }
+  }
+
+  function closeLiveSocket() {
+    if (liveWsRef.current) {
+      try {
+        liveWsRef.current.close();
+      } catch {}
+      liveWsRef.current = null;
+    }
+
+    isLiveReadyRef.current = false;
+    activeAssistantMessageIdRef.current = null;
+  }
+
+  function handleLogout() {
+    document.cookie = `${DEMO_COOKIE}=; path=/; max-age=0; samesite=lax`;
+    cleanupAll();
+    router.push("/login-gate");
+  }
+
+  const sidebarItems = [
+    "Dashboard",
+    "Analytics",
+    "Projects",
+    "Team",
+    "Reports",
+    "Messages",
+    "Settings",
+  ];
+
+  return (
+    <main
+      className="min-h-screen bg-[#05070b] text-white"
+      style={{
+        backgroundImage:
+          "linear-gradient(rgba(5,7,11,0.66), rgba(5,7,11,0.72)), url('/images/taurus-workspace.jpg')",
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+      }}
+    >
+      <div className="mx-auto flex min-h-screen max-w-[1600px] items-center justify-center px-4 py-6">
+        <div className="relative flex min-h-[92vh] w-full overflow-hidden rounded-[40px] border border-cyan-200/20 bg-white/[0.06] shadow-[0_0_90px_rgba(96,232,255,0.08)] backdrop-blur-2xl">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(118,237,255,0.12),transparent_30%),radial-gradient(circle_at_bottom,rgba(63,119,255,0.10),transparent_28%)]" />
+
+          <aside className="relative z-10 hidden w-[290px] border-r border-white/10 bg-white/[0.05] p-6 lg:block">
+            <div className="mb-8 flex items-center gap-3">
+              <div className="grid grid-cols-3 gap-1">
+                {Array.from({ length: 9 }).map((_, i) => (
+                  <span
+                    key={i}
+                    className="h-1.5 w-1.5 rounded-full bg-cyan-100/90 shadow-[0_0_10px_rgba(125,241,255,0.9)]"
+                  />
+                ))}
+              </div>
+              <div className="text-[26px] font-semibold tracking-[0.22em] text-cyan-50">
+                TAURUS
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {sidebarItems.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  className={`flex w-full items-center rounded-[20px] px-4 py-4 text-left text-lg ${
+                    item === "Messages"
+                      ? "border border-cyan-300/15 bg-[linear-gradient(180deg,rgba(96,182,255,0.30),rgba(61,134,255,0.22))] shadow-[0_0_20px_rgba(97,172,255,0.22)]"
+                      : "border border-white/10 bg-white/[0.05]"
+                  }`}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="mt-6 flex w-full items-center rounded-[20px] border border-white/10 bg-white/[0.05] px-4 py-4 text-left text-lg"
+            >
+              Logout
+            </button>
+          </aside>
+
+          <section className="relative z-10 flex min-w-0 flex-1 flex-col">
+            <header className="border-b border-white/10 px-4 py-4 md:px-6">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[18px] font-semibold md:text-[22px]">
+                    Hi, Taurus.
+                  </div>
+                  <div className="text-sm text-white/50">{statusText}</div>
+                </div>
+
+                <div className="flex items-center gap-2 md:gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setDialOpen(true)}
+                    className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/[0.06] text-xl"
+                    aria-label="Open phone dialer"
+                  >
+                    ☎
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsMuted((prev) => !prev)}
+                    className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/[0.06] text-xl"
+                    aria-label="Toggle microphone"
+                  >
+                    {isMuted ? "🔇" : "🎤"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSpeakerOn((prev) => !prev)}
+                    className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/[0.06] text-xl"
+                    aria-label="Toggle speaker"
+                  >
+                    {speakerOn ? "🔊" : "🔈"}
+                  </button>
+
+                  {callConnected ? (
+                    <button
+                      type="button"
+                      onClick={stopCall}
+                      className="flex h-11 w-11 items-center justify-center rounded-full bg-[#ff2d55] text-xl"
+                      aria-label="End call"
+                    >
+                      ×
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </header>
+
+            <div className="grid min-h-0 flex-1 gap-4 p-4 md:grid-cols-[1.25fr_340px] md:p-6">
+              <div className="flex min-h-0 flex-col overflow-hidden rounded-[30px] border border-white/10 bg-white/[0.06]">
+                <div className="border-b border-white/10 px-5 py-4">
+                  <div className="text-3xl font-semibold">Messages</div>
+                </div>
+
+                <div ref={scrollerRef} className="flex-1 overflow-y-auto px-4 py-4 md:px-5">
+                  <div className="space-y-4">
+                    {messages.map((message) => (
+                      <div
+                        key={message.id}
+                        className={`flex ${
+                          message.role === "assistant" ? "justify-start" : "justify-end"
+                        }`}
+                      >
+                        <div
+                          className={`max-w-[85%] rounded-[24px] px-4 py-3 ${
+                            message.role === "assistant"
+                              ? "rounded-bl-md border border-white/10 bg-white/[0.08]"
+                              : "rounded-br-md border border-cyan-300/10 bg-[linear-gradient(180deg,rgba(61,134,255,0.20),rgba(61,134,255,0.10))]"
+                          }`}
+                        >
+                          <div className="mb-1 text-xs text-white/45">
+                            {message.role === "assistant" ? "Taurus" : "You"}
+                          </div>
+                          <div className="whitespace-pre-wrap text-[15px] leading-7">
+                            {message.text}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    {errorText ? (
+                      <div className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                        {errorText}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="border-t border-white/10 p-3 md:p-4">
+                  <div className="flex items-end gap-2 rounded-[24px] border border-white/10 bg-[#101010]/90 px-3 py-2">
+                    <textarea
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      placeholder="Message Taurus..."
+                      rows={1}
+                      className="max-h-40 min-h-[46px] flex-1 resize-none bg-transparent px-2 py-2 text-[15px] outline-none"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void handleSendMessage();
+                        }
+                      }}
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => void handleSendMessage()}
+                      className="mb-1 flex h-11 w-11 items-center justify-center rounded-full bg-white text-black"
+                      aria-label="Send message"
+                    >
+                      ➤
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-[28px] border border-white/10 bg-white/[0.06] p-5">
+                  <div className="text-2xl font-semibold">Workspace</div>
+                  <div className="mt-3 space-y-2 text-white/60">
+                    <div>Call state: {callState}</div>
+                    <div>Mic: {isMuted ? "Muted" : "Active"}</div>
+                    <div>Speaker: {speakerOn ? "On" : "Off"}</div>
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-white/10 bg-white/[0.06] p-5">
+                  <div className="text-2xl font-semibold">Quick Actions</div>
+                  <div className="mt-4 grid gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setDialOpen(true)}
+                      className="rounded-[20px] border border-white/10 bg-white/[0.05] px-4 py-3 text-left"
+                    >
+                      Open Dialer
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInput("Hello Taurus")}
+                      className="rounded-[20px] border border-white/10 bg-white/[0.05] px-4 py-3 text-left"
+                    >
+                      Quick Message
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="rounded-[20px] border border-white/10 bg-white/[0.05] px-4 py-3 text-left"
+                    >
+                      Logout
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {dialOpen ? (
+            <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-sm">
+              <div className="absolute inset-x-0 bottom-0 mx-auto max-w-md rounded-t-[36px] border border-white/10 bg-[#090909] px-5 pb-8 pt-4 shadow-2xl">
+                <div className="mx-auto mb-5 h-1.5 w-16 rounded-full bg-white/20" />
+                <div className="mb-2 text-center text-sm text-white/45">Phone</div>
+                <div className="mb-4 min-h-[40px] text-center text-[34px] font-semibold tracking-[0.16em]">
+                  {phoneNumber}
+                </div>
+
+                <input
+                  autoFocus
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value.replace(/[^\d*#+]/g, ""))}
+                  placeholder="Enter phone number"
+                  inputMode="tel"
+                  className="mb-4 w-full rounded-3xl border border-white/10 bg-[#131313] px-4 py-4 text-center text-xl outline-none"
+                />
+
+                <div className="mb-5 grid grid-cols-3 gap-3">
+                  {["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"].map(
+                    (key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setPhoneNumber((prev) => `${prev}${key}`)}
+                        className="rounded-full border border-white/10 bg-[#151515] px-4 py-5 text-2xl"
+                      >
+                        {key}
+                      </button>
+                    )
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setPhoneNumber((prev) => prev.slice(0, -1))}
+                    className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-4"
+                  >
+                    Delete
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDialOpen(false)}
+                    className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-4"
+                  >
+                    Close
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void startCall()}
+                    className="flex-1 rounded-2xl bg-[#30d158] px-4 py-4 font-semibold text-black"
+                  >
+                    Call
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </main>
+  );
 }

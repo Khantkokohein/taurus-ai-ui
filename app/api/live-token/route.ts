@@ -1,4 +1,6 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
+
+export const runtime = "nodejs";
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -6,15 +8,21 @@ const ai = new GoogleGenAI({
 
 export async function POST() {
   try {
+    const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const newSessionExpireTime = new Date(
+      Date.now() + 60 * 1000
+    ).toISOString();
+
     const token = await ai.authTokens.create({
       config: {
         uses: 1,
+        expireTime,
+        newSessionExpireTime,
         liveConnectConstraints: {
-          model: "gemini-2.0-flash-exp",
+          model: "gemini-3.1-flash-live-preview",
           config: {
-            sessionResumption: {},
             temperature: 0.7,
-            responseModalities: [Modality.AUDIO],
+            responseModalities: ["audio"] as never,
           },
         },
         httpOptions: {
@@ -26,11 +34,16 @@ export async function POST() {
     return Response.json({
       token: token.name,
     });
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("LIVE TOKEN ERROR:", error);
 
     return Response.json(
-      { error: "Failed to create live token." },
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to create ephemeral token.",
+      },
       { status: 500 }
     );
   }

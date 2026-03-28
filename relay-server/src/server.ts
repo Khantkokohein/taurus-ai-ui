@@ -4,7 +4,6 @@ import cors from "cors";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import speech from "@google-cloud/speech";
-import textToSpeech from "@google-cloud/text-to-speech";
 
 const app = express();
 
@@ -16,59 +15,14 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "2mb" }));
-
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-// ✅ Cloud Run service account auto auth
-const speechClient = new speech.SpeechClient();
-const ttsClient = new textToSpeech.TextToSpeechClient();
-
-// ✅ Cloud Run TTS endpoint
-app.post("/tts", async (req, res) => {
-  try {
-    const text =
-      typeof req.body?.text === "string" ? req.body.text.trim() : "";
-
-    if (!text) {
-      return res.status(400).json({ error: "Text is required." });
-    }
-
-    const [response] = await ttsClient.synthesizeSpeech({
-      input: { text },
-      voice: {
-        languageCode: "en-US",
-        name: "en-US-Neural2-D",
-      },
-      audioConfig: {
-        audioEncoding: "MP3",
-        speakingRate: 1,
-        pitch: 0,
-      },
-    });
-
-    if (!response.audioContent) {
-      return res.status(500).json({ error: "Empty TTS response." });
-    }
-
-    const audioBuffer = Buffer.from(response.audioContent as Uint8Array);
-
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Content-Length", String(audioBuffer.length));
-    return res.status(200).send(audioBuffer);
-  } catch (error: unknown) {
-    console.error("TTS ERROR FULL:", error);
-    return res.status(500).json({
-      error: error instanceof Error ? error.message : "TTS failed.",
-    });
-  }
-});
-
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws/stt" });
+
+const speechClient = new speech.SpeechClient();
 
 type ClientMessage =
   | {
@@ -106,15 +60,11 @@ wss.on("connection", (ws: WebSocket) => {
     if (!stream) return;
 
     try {
-      if (!stream.destroyed) {
-        stream.end?.();
-      }
+      if (!stream.destroyed) stream.end?.();
     } catch {}
 
     try {
-      if (!stream.destroyed) {
-        stream.destroy?.();
-      }
+      if (!stream.destroyed) stream.destroy?.();
     } catch {}
   };
 
@@ -190,13 +140,12 @@ wss.on("connection", (ws: WebSocket) => {
 
       if (msg.type === "audio") {
         const stream = recognizeStream;
+        if (!stream) return;
         if (!canWriteToStream(stream)) return;
-
-        const safeStream = stream as SafeRecognizeStream;
 
         try {
           const buffer = Buffer.from(msg.audio, "base64");
-          safeStream.write?.(buffer);
+          stream.write?.(buffer);
         } catch (error) {
           console.error("STREAM WRITE ERROR:", error);
           cleanup();
