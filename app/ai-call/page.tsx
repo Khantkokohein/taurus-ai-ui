@@ -10,6 +10,18 @@ const RING_DURATION_SECONDS = 20;
 const REQUIRED_LOCAL_NUMBER = "7777777";
 const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_WS_URL!;
 
+function getRelayHttpUrl(wsUrl: string) {
+  if (wsUrl.startsWith("wss://")) {
+    return wsUrl.replace("wss://", "https://").replace(/\/ws\/stt$/, "");
+  }
+  if (wsUrl.startsWith("ws://")) {
+    return wsUrl.replace("ws://", "http://").replace(/\/ws\/stt$/, "");
+  }
+  return wsUrl.replace(/\/ws\/stt$/, "");
+}
+
+const RELAY_HTTP_URL = getRelayHttpUrl(RELAY_WS_URL);
+
 export default function AICallPage() {
   const [phoneNumber, setPhoneNumber] = useState(REQUIRED_LOCAL_NUMBER);
   const [callState, setCallState] = useState<CallState>("idle");
@@ -76,7 +88,6 @@ export default function AICallPage() {
   }
 
   async function unlockAudio() {
-    // silent WAV, ringtone မသုံးဘူး။ duplicate ringtone fix.
     const silentWav =
       "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
 
@@ -336,7 +347,7 @@ export default function AICallPage() {
       setVoiceState("speaking");
       setStatusText("Taurus AI is speaking...");
 
-      const res = await fetch("/api/tts", {
+      const res = await fetch(`${RELAY_HTTP_URL}/tts`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
