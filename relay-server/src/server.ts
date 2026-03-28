@@ -15,13 +15,8 @@ app.get("/health", (_req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws/stt" });
 
-const speechClient = new speech.SpeechClient({
-  credentials: {
-    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-  },
-  projectId: process.env.GOOGLE_PROJECT_ID,
-});
+// Cloud Run service account auth ကိုသုံးမယ်
+const speechClient = new speech.SpeechClient();
 
 type ClientMessage =
   | {
@@ -140,22 +135,23 @@ wss.on("connection", (ws: WebSocket) => {
         ws.send(JSON.stringify({ type: "started" }));
         return;
       }
-if (msg.type === "audio") {
-  const stream = recognizeStream;
-  if (!canWriteToStream(stream)) return;
 
-  const safeStream = stream as SafeRecognizeStream;
+      if (msg.type === "audio") {
+        const stream = recognizeStream;
+        if (!canWriteToStream(stream)) return;
 
-  try {
-    const buffer = Buffer.from(msg.audio, "base64");
-    safeStream.write?.(buffer);
-  } catch (error) {
-    console.error("STREAM WRITE ERROR:", error);
-    cleanup();
-  }
+        const safeStream = stream as SafeRecognizeStream;
 
-  return;
-}
+        try {
+          const buffer = Buffer.from(msg.audio, "base64");
+          safeStream.write?.(buffer);
+        } catch (error) {
+          console.error("STREAM WRITE ERROR:", error);
+          cleanup();
+        }
+
+        return;
+      }
 
       if (msg.type === "stop") {
         cleanup();
