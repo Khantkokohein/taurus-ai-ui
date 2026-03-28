@@ -2,16 +2,41 @@ import textToSpeech from "@google-cloud/text-to-speech";
 
 export const runtime = "nodejs";
 
+const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
+const privateKey = process.env.GOOGLE_PRIVATE_KEY;
+const projectId = process.env.GOOGLE_PROJECT_ID;
+
 const client = new textToSpeech.TextToSpeechClient({
   credentials: {
-    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+    client_email: clientEmail,
+    private_key: privateKey?.replace(/\\n/g, "\n"),
   },
-  projectId: process.env.GOOGLE_PROJECT_ID,
+  projectId,
 });
 
 export async function POST(req: Request) {
   try {
+    if (!clientEmail) {
+      return Response.json(
+        { error: "Missing GOOGLE_CLIENT_EMAIL in Vercel env" },
+        { status: 500 }
+      );
+    }
+
+    if (!privateKey) {
+      return Response.json(
+        { error: "Missing GOOGLE_PRIVATE_KEY in Vercel env" },
+        { status: 500 }
+      );
+    }
+
+    if (!projectId) {
+      return Response.json(
+        { error: "Missing GOOGLE_PROJECT_ID in Vercel env" },
+        { status: 500 }
+      );
+    }
+
     const { text } = await req.json();
 
     if (!text || typeof text !== "string") {
