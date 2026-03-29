@@ -189,11 +189,11 @@ export default function AICallPage() {
     await ensureOutputContext();
 
     await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(
-        `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?access_token=${encodeURIComponent(
-          token
-        )}`
-      );
+     const ws = new WebSocket(
+  `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=${encodeURIComponent(
+    token
+  )}`
+);
 
       liveWsRef.current = ws;
       isLiveReadyRef.current = false;
