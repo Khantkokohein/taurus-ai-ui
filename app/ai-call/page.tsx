@@ -13,7 +13,7 @@ type ChatMessage = {
 type CallState = "idle" | "connecting" | "connected" | "ended";
 
 type LiveIncomingMessage = {
-  setupComplete?: boolean;
+  setupComplete?: boolean | Record<string, never>;
   error?: { message?: string };
   serverContent?: {
     modelTurn?: {
@@ -190,7 +190,7 @@ export default function AICallPage() {
 
     await new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(
-        `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=${encodeURIComponent(
+        `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?access_token=${encodeURIComponent(
           token
         )}`
       );
@@ -198,34 +198,41 @@ export default function AICallPage() {
       liveWsRef.current = ws;
       isLiveReadyRef.current = false;
 
-     ws.onopen = () => {
-  const setupPayload = {
-    setup: {
-      model: "models/gemini-3.1-flash-live-preview",
-      generationConfig: {
-        responseModalities: ["audio"], // ✅ MUST lowercase
-      },
-    },
-  };
+      let setupResolved = false;
 
-  console.log("LIVE SETUP SENT:", setupPayload);
+      ws.onopen = () => {
+        const setupPayload = {
+          setup: {
+            model: "models/gemini-3.1-flash-live-preview",
+            generationConfig: {
+              responseModalities: ["audio"],
+            },
+          },
+        };
 
-  ws.send(JSON.stringify(setupPayload));
-};
+        console.log("LIVE SETUP SENT:", setupPayload);
+        ws.send(JSON.stringify(setupPayload));
+      };
 
       ws.onmessage = async (event) => {
         try {
+          console.log("LIVE RAW MESSAGE:", event.data);
+
           const msg = JSON.parse(event.data) as LiveIncomingMessage;
 
-          if (msg.setupComplete) {
+          if (msg.setupComplete !== undefined) {
             isLiveReadyRef.current = true;
+            setupResolved = true;
             setStatusText(callConnected ? "Call live" : "Chat ready");
             resolve();
             return;
           }
 
           if (msg.error?.message) {
-            reject(new Error(msg.error.message));
+            if (!setupResolved) {
+              reject(new Error(msg.error.message));
+            }
+            setErrorText(msg.error.message);
             return;
           }
 
@@ -265,19 +272,35 @@ export default function AICallPage() {
       };
 
       ws.onerror = () => {
-        reject(new Error("Gemini Live socket failed."));
+        if (!setupResolved) {
+          reject(new Error("Gemini Live socket failed."));
+        }
       };
 
-      ws.onclose = () => {
-  console.warn("LIVE SOCKET CLOSED");
+      ws.onclose = (event) => {
+        console.warn("LIVE SOCKET CLOSED", {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+        });
 
-  isLiveReadyRef.current = false;
+        liveWsRef.current = null;
+        isLiveReadyRef.current = false;
 
-  setStatusText("Disconnected");
-  setErrorText("Connection lost. Please retry.");
+        if (!setupResolved) {
+          reject(
+            new Error(
+              `Live setup failed. Socket closed (${event.code}${
+                event.reason ? `: ${event.reason}` : ""
+              })`
+            )
+          );
+          return;
+        }
 
-  liveWsRef.current = null;
-};
+        setStatusText("Disconnected");
+        setErrorText("Connection lost. Please retry.");
+      };
     });
   }
 
@@ -321,19 +344,20 @@ export default function AICallPage() {
     const assistantId = addMessage("assistant", "");
     activeAssistantMessageIdRef.current = assistantId;
 
-    liveWsRef.current.send(
-      JSON.stringify({
-        clientContent: {
-          turns: [
-            {
-              role: "user",
-              parts: [{ text }],
-            },
-          ],
-          turnComplete: true,
-        },
-      })
-    );
+    const payload = {
+      clientContent: {
+        turns: [
+          {
+            role: "user",
+            parts: [{ text }],
+          },
+        ],
+        turnComplete: true,
+      },
+    };
+
+    console.log("SEND CLIENT CONTENT:", payload);
+    liveWsRef.current.send(JSON.stringify(payload));
   }
 
   async function handleSendMessage() {
@@ -406,11 +430,15 @@ export default function AICallPage() {
       await ensureLiveSocket();
 
       addMessage("assistant", `Calling ${AI_LOCAL_NUMBER}...`);
-      addMessage("assistant", "Playing ringtone 1/2...");
-      await playSingleRingtone(RINGTONE_TRACKS[0], RINGTONE_EACH_MS);
 
-      addMessage("assistant", "Playing ringtone 2/2...");
-      await playSingleRingtone(RINGTONE_TRACKS[1], RINGTONE_EACH_MS);
+      const selectedRingtone =
+        RINGTONE_TRACKS[Math.floor(Math.random() * RINGTONE_TRACKS.length)];
+
+      addMessage(
+        "assistant",
+        `Playing ringtone: ${selectedRingtone.split("/").pop()}...`
+      );
+      await playSingleRingtone(selectedRingtone, RINGTONE_EACH_MS);
 
       await startSttRelay();
       await startMic();
@@ -420,7 +448,7 @@ export default function AICallPage() {
       addMessage("assistant", `${AI_LOCAL_NUMBER} answered.`);
 
       await sendTextToLive(
-        "Answer the call briefly and naturally as Taurus. Greet the caller warmly."
+        "မင်္ဂလာပါ၊ ကျွန်တော် Taurus AI ပါ။ ဘာကူညီပေးရမလဲ? မြန်မာလိုသာ ပြောပါ။"
       );
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "Call start failed.");
