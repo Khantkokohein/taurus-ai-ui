@@ -32,6 +32,11 @@ type LiveIncomingMessage = {
 const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_WS_URL!;
 const DEMO_COOKIE = "taurus_demo_session";
 
+const AI_LOCAL_NUMBER = "+70 20 7777777";
+const RINGTONE_TRACKS = ["/audio/ringtone-1.mp3", "/audio/ringtone-2.mp3"];
+const RINGTONE_EACH_MS = 20_000;
+const BG_IMAGE_URL = "/images/ai-call-bg.jpg";
+
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -74,7 +79,6 @@ export default function AICallPage() {
   const [input, setInput] = useState("");
   const [callState, setCallState] = useState<CallState>("idle");
   const [dialOpen, setDialOpen] = useState(false);
-  const [phoneNumber, setPhoneNumber] = useState("");
   const [isMuted, setIsMuted] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(true);
   const [statusText, setStatusText] = useState("Workspace ready");
@@ -94,6 +98,9 @@ export default function AICallPage() {
   const activeAssistantMessageIdRef = useRef<string | null>(null);
   const isLiveReadyRef = useRef(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+
+  const ringtoneAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ringtoneTimeoutRef = useRef<number | null>(null);
 
   const callConnected = useMemo(() => callState === "connected", [callState]);
 
@@ -241,8 +248,13 @@ export default function AICallPage() {
               }
 
               const currentId = activeAssistantMessageIdRef.current;
-              const currentMessage = messages.find((m) => m.id === currentId)?.text || "";
-              updateMessage(currentId, `${currentMessage}${part.text}`);
+              setMessages((prev) =>
+                prev.map((msgItem) =>
+                  msgItem.id === currentId
+                    ? { ...msgItem, text: `${msgItem.text}${part.text}` }
+                    : msgItem
+                )
+              );
             }
 
             if (
@@ -268,9 +280,7 @@ export default function AICallPage() {
 
       ws.onclose = () => {
         isLiveReadyRef.current = false;
-        if (callState === "connected") {
-          setStatusText("Call disconnected");
-        }
+        setStatusText((prev) => (prev === "Call ended" ? prev : "Disconnected"));
       };
     });
   }
@@ -345,28 +355,80 @@ export default function AICallPage() {
     }
   }
 
-  async function startCall() {
-    if (!phoneNumber.trim()) {
-      setErrorText("Enter a phone number.");
-      return;
+  function stopRingtone() {
+    if (ringtoneTimeoutRef.current) {
+      window.clearTimeout(ringtoneTimeoutRef.current);
+      ringtoneTimeoutRef.current = null;
     }
 
+    if (ringtoneAudioRef.current) {
+      ringtoneAudioRef.current.pause();
+      ringtoneAudioRef.current.currentTime = 0;
+      ringtoneAudioRef.current = null;
+    }
+  }
+
+  async function playSingleRingtone(src: string, durationMs: number) {
+    return new Promise<void>((resolve) => {
+      stopRingtone();
+
+      const audio = new Audio(src);
+      audio.loop = true;
+      ringtoneAudioRef.current = audio;
+
+      const done = () => {
+        if (ringtoneTimeoutRef.current) {
+          window.clearTimeout(ringtoneTimeoutRef.current);
+          ringtoneTimeoutRef.current = null;
+        }
+
+        audio.pause();
+        audio.currentTime = 0;
+
+        if (ringtoneAudioRef.current === audio) {
+          ringtoneAudioRef.current = null;
+        }
+
+        resolve();
+      };
+
+      ringtoneTimeoutRef.current = window.setTimeout(done, durationMs);
+
+      audio.play().catch(() => {
+        done();
+      });
+    });
+  }
+
+  async function startCall() {
     setDialOpen(false);
     setErrorText("");
     setCallState("connecting");
-    setStatusText("Connecting call...");
+    setStatusText(`Dialing ${AI_LOCAL_NUMBER}...`);
 
     try {
       await ensureLiveSocket();
+
+      addMessage("assistant", `Calling ${AI_LOCAL_NUMBER}...`);
+      addMessage("assistant", "Playing ringtone 1/2...");
+      await playSingleRingtone(RINGTONE_TRACKS[0], RINGTONE_EACH_MS);
+
+      addMessage("assistant", "Playing ringtone 2/2...");
+      await playSingleRingtone(RINGTONE_TRACKS[1], RINGTONE_EACH_MS);
+
       await startSttRelay();
       await startMic();
 
       setCallState("connected");
-      setStatusText("Call live");
-      addMessage("assistant", `Calling ${phoneNumber}...`);
-      await sendTextToLive("Please greet the caller briefly and warmly.");
+      setStatusText(`Connected to ${AI_LOCAL_NUMBER}`);
+      addMessage("assistant", `${AI_LOCAL_NUMBER} answered.`);
+
+      await sendTextToLive(
+        "Answer the call briefly and naturally as Taurus. Greet the caller warmly."
+      );
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "Call start failed.");
+      stopRingtone();
       stopCall();
     }
   }
@@ -420,9 +482,7 @@ export default function AICallPage() {
 
       ws.onerror = () => reject(new Error("STT socket failed."));
       ws.onclose = () => {
-        if (callState === "connected") {
-          setStatusText("Call disconnected");
-        }
+        setStatusText((prev) => (prev === "Call ended" ? prev : "Disconnected"));
       };
     });
   }
@@ -490,6 +550,8 @@ export default function AICallPage() {
   }
 
   function stopCall() {
+    stopRingtone();
+
     setCallState("ended");
     setStatusText("Call ended");
 
@@ -556,8 +618,7 @@ export default function AICallPage() {
     <main
       className="min-h-screen bg-[#05070b] text-white"
       style={{
-        backgroundImage:
-          "linear-gradient(rgba(5,7,11,0.66), rgba(5,7,11,0.72)), url('/images/taurus-workspace.jpg')",
+        backgroundImage: `linear-gradient(rgba(5,7,11,0.66), rgba(5,7,11,0.72)), url('${BG_IMAGE_URL}')`,
         backgroundSize: "cover",
         backgroundPosition: "center",
       }}
@@ -731,6 +792,7 @@ export default function AICallPage() {
                   <div className="text-2xl font-semibold">Workspace</div>
                   <div className="mt-3 space-y-2 text-white/60">
                     <div>Call state: {callState}</div>
+                    <div>AI number: {AI_LOCAL_NUMBER}</div>
                     <div>Mic: {isMuted ? "Muted" : "Active"}</div>
                     <div>Speaker: {speakerOn ? "On" : "Off"}</div>
                   </div>
@@ -770,44 +832,12 @@ export default function AICallPage() {
             <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-sm">
               <div className="absolute inset-x-0 bottom-0 mx-auto max-w-md rounded-t-[36px] border border-white/10 bg-[#090909] px-5 pb-8 pt-4 shadow-2xl">
                 <div className="mx-auto mb-5 h-1.5 w-16 rounded-full bg-white/20" />
-                <div className="mb-2 text-center text-sm text-white/45">Phone</div>
-                <div className="mb-4 min-h-[40px] text-center text-[34px] font-semibold tracking-[0.16em]">
-                  {phoneNumber}
-                </div>
-
-                <input
-                  autoFocus
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value.replace(/[^\d*#+]/g, ""))}
-                  placeholder="Enter phone number"
-                  inputMode="tel"
-                  className="mb-4 w-full rounded-3xl border border-white/10 bg-[#131313] px-4 py-4 text-center text-xl outline-none"
-                />
-
-                <div className="mb-5 grid grid-cols-3 gap-3">
-                  {["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"].map(
-                    (key) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => setPhoneNumber((prev) => `${prev}${key}`)}
-                        className="rounded-full border border-white/10 bg-[#151515] px-4 py-5 text-2xl"
-                      >
-                        {key}
-                      </button>
-                    )
-                  )}
+                <div className="mb-2 text-center text-sm text-white/45">AI Number</div>
+                <div className="mb-6 min-h-[40px] text-center text-[34px] font-semibold tracking-[0.08em]">
+                  {AI_LOCAL_NUMBER}
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setPhoneNumber((prev) => prev.slice(0, -1))}
-                    className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-4"
-                  >
-                    Delete
-                  </button>
-
                   <button
                     type="button"
                     onClick={() => setDialOpen(false)}
