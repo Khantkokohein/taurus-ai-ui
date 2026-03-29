@@ -198,30 +198,20 @@ export default function AICallPage() {
       liveWsRef.current = ws;
       isLiveReadyRef.current = false;
 
-      ws.onopen = () => {
-        ws.send(
-          JSON.stringify({
-            setup: {
-              model: "models/gemini-3.1-flash-live-preview",
-              generationConfig: {
-                responseModalities: ["AUDIO"],
-              },
-              systemInstruction: {
-                parts: [
-                  {
-                    text:
-                      "You are Taurus, a premium AI assistant. " +
-                      "Reply naturally, clearly, and briefly. " +
-                      "If the user speaks Burmese, answer in Burmese. " +
-                      "If the user speaks English, answer in English. " +
-                      "For mixed language, reply in the dominant language.",
-                  },
-                ],
-              },
-            },
-          })
-        );
-      };
+     ws.onopen = () => {
+  const setupPayload = {
+    setup: {
+      model: "models/gemini-3.1-flash-live-preview",
+      generationConfig: {
+        responseModalities: ["audio"], // ✅ MUST lowercase
+      },
+    },
+  };
+
+  console.log("LIVE SETUP SENT:", setupPayload);
+
+  ws.send(JSON.stringify(setupPayload));
+};
 
       ws.onmessage = async (event) => {
         try {
@@ -279,9 +269,15 @@ export default function AICallPage() {
       };
 
       ws.onclose = () => {
-        isLiveReadyRef.current = false;
-        setStatusText((prev) => (prev === "Call ended" ? prev : "Disconnected"));
-      };
+  console.warn("LIVE SOCKET CLOSED");
+
+  isLiveReadyRef.current = false;
+
+  setStatusText("Disconnected");
+  setErrorText("Connection lost. Please retry.");
+
+  liveWsRef.current = null;
+};
     });
   }
 
