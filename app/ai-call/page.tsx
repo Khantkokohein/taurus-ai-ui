@@ -33,9 +33,9 @@ const RELAY_WS_URL = process.env.NEXT_PUBLIC_RELAY_WS_URL!;
 const DEMO_COOKIE = "taurus_demo_session";
 
 const AI_LOCAL_NUMBER = "+70 20 7777777";
-const RINGTONE_TRACKS = ["/audio/ringtone-1.mp3", "/audio/ringtone-2.mp3"];
+const RINGTONE_TRACKS = ["/ringtone-1.mp3", "/ringtone-2.mp3"];
 const RINGTONE_EACH_MS = 20_000;
-const BG_IMAGE_URL = "/images/ai-call-bg.jpg";
+const BG_IMAGE_URL = "/ai-call-bg.jpg";
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
