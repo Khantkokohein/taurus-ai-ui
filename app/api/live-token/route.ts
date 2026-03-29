@@ -2,20 +2,22 @@ import { GoogleGenAI } from "@google/genai";
 
 export const runtime = "nodejs";
 
-const apiKey = process.env.GEMINI_API_KEY;
-
-const ai = new GoogleGenAI({
-  apiKey,
-});
-
 export async function POST() {
   try {
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    console.log("LIVE TOKEN API KEY EXISTS:", Boolean(apiKey));
+
     if (!apiKey) {
       return Response.json(
         { error: "GEMINI_API_KEY is missing." },
         { status: 500 }
       );
     }
+
+    const ai = new GoogleGenAI({
+      apiKey,
+    });
 
     const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     const newSessionExpireTime = new Date(Date.now() + 60 * 1000).toISOString();
@@ -37,6 +39,8 @@ export async function POST() {
         },
       },
     });
+
+    console.log("LIVE TOKEN CREATED:", token?.name);
 
     return Response.json({
       token: token.name,
