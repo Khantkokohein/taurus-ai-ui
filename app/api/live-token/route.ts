@@ -7,6 +7,7 @@ export async function POST() {
     const apiKey = process.env.GEMINI_API_KEY;
 
     console.log("LIVE TOKEN API KEY EXISTS:", Boolean(apiKey));
+    console.log("LIVE TOKEN API KEY PREFIX:", apiKey?.slice(0, 8));
 
     if (!apiKey) {
       return Response.json(
@@ -15,12 +16,12 @@ export async function POST() {
       );
     }
 
-    const ai = new GoogleGenAI({
-      apiKey,
-    });
+    const ai = new GoogleGenAI({ apiKey });
 
     const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     const newSessionExpireTime = new Date(Date.now() + 60 * 1000).toISOString();
+
+    console.log("LIVE TOKEN REQUEST START");
 
     const token = await ai.authTokens.create({
       config: {
