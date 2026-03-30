@@ -5,13 +5,7 @@ import { useEffect } from "react";
 
 export default function Home() {
 
-useEffect(() => {
-    const access = localStorage.getItem("taurus_access");
 
-    if (access !== "granted") {
-      window.location.href = "/login-gate";
-    }
-  }, []);
 
   const brands = [
     {

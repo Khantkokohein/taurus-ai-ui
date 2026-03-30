@@ -26,18 +26,9 @@ export function middleware(request: NextRequest) {
 
   const hasSession = request.cookies.get(DEMO_COOKIE)?.value === "1";
 
-  if (pathname === "/") {
-    const url = request.nextUrl.clone();
-    url.pathname = "/login-gate";
-    return NextResponse.redirect(url);
-  }
 
-  if (pathname.startsWith("/ai-call") && !hasSession) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/login-gate";
-    return NextResponse.redirect(url);
-  }
 
+ 
   return NextResponse.next();
 }
 
